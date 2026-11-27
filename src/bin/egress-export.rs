@@ -111,7 +111,7 @@ mod tests {
     const V1: &str = r#"slipmesh:
   kind: network
 cluster:
-  bgp_as: 64512
+  bgp_as: 64496
   loopback_networks: {ipv4: "198.51.100.0/25", ipv6: "3fff::/32"}
   bypass_refresh_interval_secs: 3600
 nodes:
