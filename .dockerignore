@@ -1,0 +1,9 @@
+target/
+**/target/
+# The Dockerfile packages a pre-built binary from target/<TARGETARCH>/release/, so that one file
+# stays in the build context while the rest of target/ is excluded. For a local build, stage it
+# from the path cargo builds into, e.g. on x86_64:
+#   mkdir -p target/amd64/release
+#   cp target/x86_64-unknown-linux-musl/release/egress target/amd64/release/
+!target/amd64/release/egress
+!target/arm64/release/egress
