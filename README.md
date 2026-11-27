@@ -38,7 +38,7 @@ written as prefixes), host names to the system's resolver, A and AAAA each asked
 source's own `ttl` is how long each of its answers holds; without one, a RIPEstat or literal answer
 holds for `spec.ttl`, and a host's for its records' shortest TTL, at most `spec.ttl` and at least
 60 s, even where `spec.ttl` is shorter. The answers merge within their label, an empty label being
-none, and every network of `exclude` and every mesh endpoint is cut out of them.
+none, and every network of `exclude` is cut out of them.
 
 A list's queries run at once. Each RIPEstat request has 90 s and each family of a host 15 s; a
 query that fails is asked again, up to six attempts, waiting 5 s and twice as long after each
@@ -50,6 +50,29 @@ nothing left.
 The router daemon of the Talos extensions keeps its own IPv4-only copy of this resolver for format
 version 1 until that daemon stops resolving lists; a defect found in one copy is checked against
 the other.
+
+## Running the agent
+
+```bash
+kubectl apply -f deploy/egress-crd.yaml -f deploy/daemonset.yaml
+```
+
+[`deploy/daemonset.yaml`](deploy/daemonset.yaml) runs `egress run` on every node, in
+`kube-system`, with its ServiceAccount and the RBAC it needs: to watch every `Egress` and to patch
+their status. A pod resolves each `Egress` that names its node, `NODE_NAME` through the Downward
+API, and nothing else; it installs no route yet. Its answers live in memory: each is asked again
+once its lifetime is over, and the list is composed again. A changed `spec` starts the list anew.
+After a query gives up, the list is tried again 3 min later.
+
+After every resolve the node applies its own entry of `status.nodes`, through server-side apply
+with the field manager `egress/<node>`: `observedGeneration`, `resolvedAt` of the last good
+resolve, the prefix count per family and the `Resolved` condition, its message the error of a
+failed one. A list that stops naming the node loses that entry.
+
+`--metrics <address:port>` is where `/metrics` is served; the DaemonSet gives the node's
+InternalIP, `status.hostIP`, and port 9478. The series are `slipmesh_egress_prefixes{egress,family}`,
+`slipmesh_egress_last_resolve_timestamp_seconds{egress}` and
+`slipmesh_egress_resolve_errors_total{egress}`.
 
 ## Moving the lists of a version 1 file
 
