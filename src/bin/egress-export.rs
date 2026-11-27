@@ -30,17 +30,17 @@ fn main() -> Result<()> {
 fn manifests(raw: &str) -> Result<String> {
     let file = SlipmeshFile::parse(raw).context("failed to read the file as format version 1")?;
     let topology = file.topology();
-    let interval = topology
+    let ttl = topology
         .cluster
         .bypass_refresh_interval_secs
         .unwrap_or(DEFAULT_BYPASS_REFRESH_INTERVAL_SECS);
-    let interval = u32::try_from(interval)
-        .with_context(|| format!("cluster.bypass_refresh_interval_secs {interval} is too long"))?;
+    let ttl = u32::try_from(ttl)
+        .with_context(|| format!("cluster.bypass_refresh_interval_secs {ttl} is too long"))?;
     let mut documents = Vec::new();
     for entry in &topology.bypass {
         let spec = EgressSpec {
             nodes: vec![entry.node.clone()],
-            interval,
+            ttl,
             install: false,
             via: None,
             include: sources(&entry.include)
@@ -152,7 +152,7 @@ kind: Egress
 metadata: {name: node-a}
 spec:
   nodes: [node-a]
-  interval: 3600
+  ttl: 3600
   install: false
   include:
     - {label: example, asns: [AS64496, AS64497]}
@@ -168,7 +168,7 @@ kind: Egress
 metadata: {name: node-b}
 spec:
   nodes: [node-b]
-  interval: 3600
+  ttl: 3600
   install: false
   include:
     - {label: country, country: XX}"
@@ -180,7 +180,7 @@ spec:
     fn a_file_without_a_refresh_interval_gets_the_daemons_default_written_out() {
         let without = V1.replace("  bypass_refresh_interval_secs: 3600\n", "");
         for egress in yaml(&manifests(&without).unwrap()) {
-            assert_eq!(egress["spec"]["interval"], 86_400, "{egress}");
+            assert_eq!(egress["spec"]["ttl"], 86_400, "{egress}");
         }
     }
 }
