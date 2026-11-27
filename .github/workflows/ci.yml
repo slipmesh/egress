@@ -1,5 +1,5 @@
 # Pull requests and pushes run the checks; only a merged release PR is built, in its own run, and
-# released as an image.
+# released as the image, with both CRDs and the DaemonSet attached.
 name: CI
 
 on:
@@ -95,3 +95,9 @@ jobs:
       tag: ${{ needs.release-commit.outputs.version }}
       latest: ${{ needs.release-commit.outputs.latest == 'true' }}
       prerelease: ${{ needs.release-commit.outputs.prerelease == 'true' }}
+      # Whatever tag the manifest carries, so the asset never names another release's image.
+      prepare: |
+        sed -i "s|\(image: ghcr.io/slipmesh/egress\):[^[:space:]]*|\1:$RELEASE_TAG|" deploy/daemonset.yaml
+        grep -n 'image:' deploy/daemonset.yaml
+        grep -q "egress:$RELEASE_TAG" deploy/daemonset.yaml
+      assets: deploy/egress-crd.yaml deploy/mesh-crd.yaml deploy/daemonset.yaml
