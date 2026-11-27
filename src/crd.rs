@@ -274,7 +274,7 @@ mod tests {
     #[test]
     fn the_example_reads_whole_with_a_status_and_passes_every_rule() {
         let mut egress: Egress =
-            yaml_serde::from_str(include_str!("../docs/example/egress.yaml")).unwrap();
+            sliplib_yaml::from_str(include_str!("../docs/example/egress.yaml")).unwrap();
         egress.status = Some(
             serde_json::from_value(json!({"nodes": [{
                 "node": "node-a",

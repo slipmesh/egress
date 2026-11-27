@@ -20,7 +20,7 @@ enum Command {
 
 fn main() -> Result<()> {
     match Cli::parse().command {
-        Command::Crd => print!("{}", yaml_serde::to_string(&crd::Egress::crd())?),
+        Command::Crd => print!("{}", sliplib_yaml::to_string(&crd::Egress::crd())?),
     }
     Ok(())
 }
