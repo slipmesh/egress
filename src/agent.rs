@@ -1,10 +1,12 @@
 //! On one node, every `Egress` that names it resolved on its own schedule, with its status and
-//! metrics kept. Nothing is installed yet.
+//! metrics kept, and its routes installed if it says so.
 
-use crate::crd::{Egress, EgressSpec};
+use crate::crd::Egress;
+use crate::install::{self, Installer};
 use crate::resolve::{self, Answer, Asked, Resolver};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use futures::StreamExt;
+use k8s_openapi::api::core::v1::Node;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use kube::Api;
 use kube::api::{Patch, PatchParams};
@@ -145,16 +147,30 @@ fn action(
     }
 }
 
-/// Watches every `Egress` until `shutdown`, resolving those that name this node.
+/// Watches every `Egress` and this node until `shutdown`, resolving the lists that name it and
+/// installing those that install.
 pub async fn run(
     agent: Agent,
     shutdown: Shutdown,
     timeouts: &ApiTimeouts,
     metrics: Arc<Metrics>,
 ) -> Result<()> {
-    let api: Api<Egress> = Api::all(agent.client);
+    let api: Api<Egress> = Api::all(agent.client.clone());
     let resolver = Arc::new(Resolver::new(resolve::RIPESTAT)?);
+    let installer = Arc::new(Installer::default());
+    let rt = sliplib_net::route::RtClient::connect().context("failed to open rtnetlink")?;
+    let changes = sliplib_net::route::link_route_and_address_changes()
+        .context("failed to follow the kernel's routes")?;
+    let installing = tokio::spawn({
+        let installer = Arc::clone(&installer);
+        async move { install::keep_installed(rt, changes, &installer).await }
+    });
     let node = agent.node;
+    let mut node_events = std::pin::pin!(sliplib_kube::watch_one::<Node>(
+        Api::all(agent.client),
+        &node,
+        timeouts
+    ));
     let mut lists = Lists::new();
     let mut listed = HashSet::new();
     let config = watcher::Config::default().timeout(timeouts.watch_secs);
@@ -165,6 +181,10 @@ pub async fn run(
     loop {
         let event = tokio::select! {
             event = events.next() => event,
+            Some(event) = node_events.next() => {
+                tagged(&installer, event);
+                continue;
+            }
             () = shutdown.requested() => break,
         };
         let Some(event) = event else { break };
@@ -172,23 +192,28 @@ pub async fn run(
             Ok(watcher::Event::Init) => listed.clear(),
             Ok(watcher::Event::InitApply(egress)) => {
                 listed.insert(egress.metadata.name.clone().unwrap_or_default());
-                changed(&api, &resolver, &metrics, &node, &mut lists, egress).await;
+                changed(
+                    &api, &resolver, &metrics, &installer, &node, &mut lists, egress,
+                )
+                .await;
             }
             Ok(watcher::Event::Apply(egress)) => {
-                changed(&api, &resolver, &metrics, &node, &mut lists, egress).await;
+                changed(
+                    &api, &resolver, &metrics, &installer, &node, &mut lists, egress,
+                )
+                .await;
             }
             Ok(watcher::Event::InitDone) => {
                 for name in gone(lists.keys(), &listed) {
                     stop(&mut lists, &metrics, &name).await;
+                    installer.forget(&name);
                 }
+                installer.listed();
             }
             Ok(watcher::Event::Delete(egress)) => {
-                stop(
-                    &mut lists,
-                    &metrics,
-                    &egress.metadata.name.unwrap_or_default(),
-                )
-                .await;
+                let name = egress.metadata.name.unwrap_or_default();
+                stop(&mut lists, &metrics, &name).await;
+                installer.forget(&name);
             }
             Err(e) => tracing::warn!(error = %e, "watch of the Egress resources failed, retrying"),
         }
@@ -196,13 +221,32 @@ pub async fn run(
     for (_, (_, task)) in lists {
         task.abort();
     }
+    installing.abort();
     Ok(())
+}
+
+/// The tag of this node's routes, from its annotations as they change.
+fn tagged(installer: &Installer, event: watcher::Result<watcher::Event<Node>>) {
+    let node = match event {
+        Ok(watcher::Event::Apply(node) | watcher::Event::InitApply(node)) => node,
+        Ok(_) => return,
+        Err(e) => {
+            tracing::warn!(error = %e, "watch of this node failed, retrying");
+            return;
+        }
+    };
+    let tag = install::tag(&node.metadata.annotations.unwrap_or_default()).unwrap_or_else(|e| {
+        tracing::warn!(error = format!("{e:#}"), "no routes are installed");
+        None
+    });
+    installer.set_tag(tag);
 }
 
 async fn changed(
     api: &Api<Egress>,
     resolver: &Arc<Resolver>,
     metrics: &Arc<Metrics>,
+    installer: &Arc<Installer>,
     node: &str,
     lists: &mut Lists,
     egress: Egress,
@@ -220,20 +264,32 @@ async fn changed(
         Action::Keep | Action::Ignore => {}
         Action::Start => {
             stop(lists, metrics, &name).await;
-            tracing::info!(egress = name, generation, "resolving");
+            tracing::info!(
+                egress = name,
+                generation,
+                install = egress.spec.install,
+                "resolving"
+            );
+            // In one step: the installer must not see the list gone in between and delete its
+            // routes.
+            if egress.spec.install {
+                installer.pending(&name);
+            } else {
+                installer.forget(&name);
+            }
             let task = tokio::spawn(keep_resolved(
                 api.clone(),
                 Arc::clone(resolver),
                 Arc::clone(metrics),
+                Arc::clone(installer),
                 node.to_owned(),
-                name.clone(),
-                generation,
-                egress.spec,
+                egress,
             ));
             lists.insert(name, (version, task));
         }
         Action::Leave => {
             stop(lists, metrics, &name).await;
+            installer.forget(&name);
             tracing::info!(egress = name, "no longer names this node");
             let unowned = json!({"apiVersion": "slipmesh.net/v1alpha1", "kind": "Egress"});
             if let Err(e) = api
@@ -264,8 +320,8 @@ fn gone<'a>(running: impl Iterator<Item = &'a String>, listed: &HashSet<String>)
         .collect()
 }
 
-/// Ends the list's task, then drops its series: an aborted task stops only at its next await,
-/// and could write a series again in between.
+/// Ends the list's task, then drops its series: an aborted task stops only at its next await, and
+/// could write them again in between. The installer still holds the list's networks.
 async fn stop(lists: &mut Lists, metrics: &Metrics, name: &str) {
     if let Some((_, task)) = lists.remove(name) {
         task.abort();
@@ -278,17 +334,19 @@ fn field_manager(node: &str) -> PatchParams {
     PatchParams::apply(&format!("egress/{node}")).force()
 }
 
-/// Resolves `spec` for as long as it runs: each answer again once its lifetime is over, the list
-/// composed and its status applied after each round.
+/// Resolves `egress` for as long as it runs: each answer again once its lifetime is over, the
+/// list composed, handed to the installer if it installs, and its status applied after each round.
 async fn keep_resolved(
     api: Api<Egress>,
     resolver: Arc<Resolver>,
     metrics: Arc<Metrics>,
+    installer: Arc<Installer>,
     node: String,
-    name: String,
-    generation: i64,
-    spec: EgressSpec,
+    egress: Egress,
 ) {
+    let name = egress.metadata.name.unwrap_or_default();
+    let generation = egress.metadata.generation.unwrap_or_default();
+    let spec = egress.spec;
     let asked = resolve::asked(&spec);
     let mut answers: Vec<Option<Answer>> = vec![None; asked.len()];
     let mut last = Last::default();
@@ -300,6 +358,9 @@ async fn keep_resolved(
                 let counts = counts(networks);
                 metrics.resolved(&name, counts, now);
                 last.resolved(now, counts);
+                if spec.install {
+                    installer.resolved(&name, networks.clone());
+                }
                 next_wake(&answers, SystemTime::now())
             }
             Err(e) => {
