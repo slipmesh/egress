@@ -6,43 +6,36 @@ The egress agent of [slipmesh](https://github.com/slipmesh): a DaemonSet that re
 ## The `Egress` resource
 
 `slipmesh.net/v1alpha1`, cluster-scoped, one per list. [`deploy/egress-crd.yaml`](deploy/egress-crd.yaml)
-is its CRD, as `egress crd` prints it; CI fails when the two differ, so after a change to the
+is its CRD, as `egress crd` prints it; a test fails when the two differ, so after a change to the
 types, write it again:
 
 ```bash
 cargo run -- crd > deploy/egress-crd.yaml
 ```
 
-```yaml
-apiVersion: slipmesh.net/v1alpha1
-kind: Egress
-metadata:
-  name: example
-spec:
-  nodes: [node-a]               # the exit nodes, by Node name
-  interval: 86400               # seconds between resolutions, 86400 when left out
-  install: false                # off: count the list, leave the kernel alone
-  via:                          # optional, per family: a gateway of its family, a link, or both
-    ipv4: {gateway: 192.0.2.1}
-  include:                      # one kind per source; `label` keeps its networks apart
-    - {label: example, asns: [AS64496]}
-    - {prefixes: [192.0.2.0/24, 2001:db8::/32]}
-    - {country: XX}
-    - {hostnames: [example.com]}
-  exclude:
-    - {prefixes: [192.0.2.128/25]}
-```
+[`docs/example/egress.yaml`](docs/example/egress.yaml) is a list with every field:
+
+- `nodes`: the exit nodes, by `Node` name;
+- `ttl`: seconds an answer holds, 86400 when left out;
+- `install`: off, the list is counted and the kernel left alone;
+- `via`: optional, per family, a gateway of that family, a link, or both;
+- `include` and `exclude`: one kind per source, `asns`, `prefixes`, `country` or `hostnames`;
+  `label` keeps a source's networks from merging with another label's, and `ttl` overrides how
+  long its answers hold.
 
 The API server refuses a source of no kind or of two, a malformed AS number, network or country
-code, a gateway of the other family and a link name the kernel would refuse.
+code, a gateway of the other family and a link name the kernel would refuse. Every list and string
+is bounded, which the API server needs to size the rules' cost; CI applies the CRD and the example
+to a throwaway cluster, since no local evaluator sizes them.
 
 ## Resolving a list
 
 Each source is asked as one query per AS number, country or host name, or one for its literal
 prefixes; both families are kept. AS numbers and countries go to
 [RIPEstat](https://stat.ripe.net/docs/data-api/) (announced prefixes, country resources), host
-names to the system's resolver. A RIPEstat or literal answer holds for `spec.interval`; a host's
-for its records' shortest TTL, at least 60 s and at most the interval. The answers merge within
+names to the system's resolver. A source's own `ttl` is how long each of its answers holds;
+without one, a RIPEstat or literal answer holds for `spec.ttl`, and a host's for its records'
+shortest TTL, at least 60 s and at most `spec.ttl`. The answers merge within
 their label, and every network of `exclude` and every mesh endpoint is cut out of them. One query
 that fails, or a list with nothing left, fails the whole resolve, and the last good list stays.
 
@@ -51,11 +44,13 @@ version 1 until that daemon stops resolving lists; neither copy follows the othe
 
 ## Moving the lists of a version 1 file
 
-`egress-export <file>` prints one `Egress` per `bypass` list of a `slipmesh.yaml` of format
-version 1, named for its node, and writes nothing. It reads the file through sliplib v0.19.0, the
-last release that reads that version. A literal source's prefixes become one source per label, a
-geoip source without a label gets the label the daemon gives it, and the refresh interval is
-written out, the daemon's default where the file has none. Routes stay off.
+`egress-export <file>` prints one `Egress` per node with a `bypass` list in a `slipmesh.yaml` of
+format version 1, named for it, its lists merged in file order as version 1 merges them, and
+writes nothing. It writes a node's mesh name as its `Node` name, which holds while the two are
+the same. It reads the file through sliplib v0.19.0, the last release that reads that version. A
+literal source's prefixes become one source per label, each written as it was read; a geoip source
+without a label gets the label the daemon gives it; the refresh interval is written out as `ttl`,
+the daemon's default where the file has none. Routes stay off.
 
 ```bash
 cargo run --bin egress-export -- slipmesh.yaml > egress.yaml
