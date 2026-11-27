@@ -26,9 +26,10 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: Auto-generated derived type for EgressSpec via `CustomResource`
+        description: One list of networks, resolved and routed out through the exit nodes it names
         properties:
           spec:
+            description: 'Read strictly: a new field reaches the agents before any CR carries it.'
             properties:
               exclude:
                 items:
@@ -36,21 +37,36 @@ spec:
                   properties:
                     asns:
                       items:
+                        maxLength: 12
                         type: string
+                      maxItems: 1000
                       type: array
                     country:
                       description: ISO 3166-1 alpha-2.
+                      maxLength: 2
                       type: string
                     hostnames:
                       items:
+                        maxLength: 253
                         type: string
+                      maxItems: 1000
                       type: array
                     label:
+                      maxLength: 63
                       type: string
                     prefixes:
                       items:
+                        maxLength: 43
                         type: string
+                      maxItems: 1000
                       type: array
+                    ttl:
+                      description: |-
+                        Seconds every network of this source holds before it is resolved again, over the list's
+                        and a host record's own.
+                      format: uint32
+                      minimum: 0.0
+                      type: integer
                   type: object
                   x-kubernetes-validations:
                   - rule: '[has(self.asns), has(self.prefixes), has(self.country), has(self.hostnames)].filter(x, x).size() == 1'
@@ -58,6 +74,8 @@ spec:
                   - rule: '!has(self.prefixes) || (size(self.prefixes) > 0 && self.prefixes.all(p, isCIDR(p)))'
                   - rule: '!has(self.country) || self.country.matches(''^[A-Za-z]{2}$'')'
                   - rule: '!has(self.hostnames) || size(self.hostnames) > 0'
+                  - rule: '!has(self.ttl) || self.ttl >= 1'
+                maxItems: 100
                 type: array
               include:
                 items:
@@ -65,21 +83,36 @@ spec:
                   properties:
                     asns:
                       items:
+                        maxLength: 12
                         type: string
+                      maxItems: 1000
                       type: array
                     country:
                       description: ISO 3166-1 alpha-2.
+                      maxLength: 2
                       type: string
                     hostnames:
                       items:
+                        maxLength: 253
                         type: string
+                      maxItems: 1000
                       type: array
                     label:
+                      maxLength: 63
                       type: string
                     prefixes:
                       items:
+                        maxLength: 43
                         type: string
+                      maxItems: 1000
                       type: array
+                    ttl:
+                      description: |-
+                        Seconds every network of this source holds before it is resolved again, over the list's
+                        and a host record's own.
+                      format: uint32
+                      minimum: 0.0
+                      type: integer
                   type: object
                   x-kubernetes-validations:
                   - rule: '[has(self.asns), has(self.prefixes), has(self.country), has(self.hostnames)].filter(x, x).size() == 1'
@@ -87,6 +120,8 @@ spec:
                   - rule: '!has(self.prefixes) || (size(self.prefixes) > 0 && self.prefixes.all(p, isCIDR(p)))'
                   - rule: '!has(self.country) || self.country.matches(''^[A-Za-z]{2}$'')'
                   - rule: '!has(self.hostnames) || size(self.hostnames) > 0'
+                  - rule: '!has(self.ttl) || self.ttl >= 1'
+                maxItems: 100
                 type: array
               install:
                 default: false
@@ -101,8 +136,11 @@ spec:
               nodes:
                 description: The exit nodes, by their Kubernetes `Node` names.
                 items:
+                  maxLength: 253
                   type: string
+                maxItems: 100
                 type: array
+                x-kubernetes-list-type: set
               via:
                 description: Absent, each family leaves through its default route's gateway.
                 properties:
@@ -110,24 +148,30 @@ spec:
                     description: A gateway of its family, a link, or both.
                     properties:
                       gateway:
+                        maxLength: 45
                         type: string
                       interface:
+                        maxLength: 15
                         type: string
                     type: object
                     x-kubernetes-validations:
                     - rule: has(self.gateway) || has(self.interface)
-                    - rule: '!has(self.interface) || self.interface.matches(''^[^/:\\s]{1,15}$'')'
+                    - rule: '!has(self.interface) || self.interface.matches(''^[!-.0-9;-~]{1,15}$'')'
+                    - rule: '!has(self.interface) || (self.interface != ''.'' && self.interface != ''..'')'
                   ipv6:
                     description: A gateway of its family, a link, or both.
                     properties:
                       gateway:
+                        maxLength: 45
                         type: string
                       interface:
+                        maxLength: 15
                         type: string
                     type: object
                     x-kubernetes-validations:
                     - rule: has(self.gateway) || has(self.interface)
-                    - rule: '!has(self.interface) || self.interface.matches(''^[^/:\\s]{1,15}$'')'
+                    - rule: '!has(self.interface) || self.interface.matches(''^[!-.0-9;-~]{1,15}$'')'
+                    - rule: '!has(self.interface) || (self.interface != ''.'' && self.interface != ''..'')'
                 type: object
                 x-kubernetes-validations:
                 - rule: '!has(self.ipv4) || !has(self.ipv4.gateway) || (isIP(self.ipv4.gateway) && ip(self.ipv4.gateway).family() == 4)'
@@ -138,7 +182,6 @@ spec:
             type: object
             x-kubernetes-validations:
             - rule: size(self.nodes) > 0
-            - rule: self.nodes.all(n, self.nodes.exists_one(m, m == n))
             - rule: size(self.include) > 0
             - rule: self.interval >= 1
           status:
@@ -181,14 +224,17 @@ spec:
                         - status
                         - type
                         type: object
+                      maxItems: 8
                       type: array
                       x-kubernetes-list-map-keys:
                       - type
                       x-kubernetes-list-type: map
                     digest:
                       description: '`sha256:` and the hex digest of the sorted list, one network per line.'
+                      maxLength: 71
                       type: string
                     node:
+                      maxLength: 253
                       type: string
                     observedGeneration:
                       format: int64
@@ -208,7 +254,7 @@ spec:
                       - ipv6
                       type: object
                     resolvedAt:
-                      description: Time is a wrapper around time.Time which supports correct marshaling to YAML and JSON.  Wrappers are provided for many of the factory methods that the time package offers.
+                      description: When the list was last resolved.
                       format: date-time
                       type: string
                     routes:
@@ -231,6 +277,7 @@ spec:
                   - prefixes
                   - routes
                   type: object
+                maxItems: 100
                 type: array
                 x-kubernetes-list-map-keys:
                 - node

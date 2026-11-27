@@ -6,35 +6,27 @@ The egress agent of [slipmesh](https://github.com/slipmesh): a DaemonSet that re
 ## The `Egress` resource
 
 `slipmesh.net/v1alpha1`, cluster-scoped, one per list. [`deploy/egress-crd.yaml`](deploy/egress-crd.yaml)
-is its CRD, as `egress crd` prints it; CI fails when the two differ, so after a change to the
+is its CRD, as `egress crd` prints it; a test fails when the two differ, so after a change to the
 types, write it again:
 
 ```bash
 cargo run -- crd > deploy/egress-crd.yaml
 ```
 
-```yaml
-apiVersion: slipmesh.net/v1alpha1
-kind: Egress
-metadata:
-  name: example
-spec:
-  nodes: [node-a]               # the exit nodes, by Node name
-  interval: 86400               # seconds between resolutions, 86400 when left out
-  install: false                # off: count the list, leave the kernel alone
-  via:                          # optional, per family: a gateway of its family, a link, or both
-    ipv4: {gateway: 192.0.2.1}
-  include:                      # one kind per source; `label` keeps its networks apart
-    - {label: example, asns: [AS64496]}
-    - {prefixes: [192.0.2.0/24, 2001:db8::/32]}
-    - {country: XX}
-    - {hostnames: [example.com]}
-  exclude:
-    - {prefixes: [192.0.2.128/25]}
-```
+[`docs/example/egress.yaml`](docs/example/egress.yaml) is a list with every field:
+
+- `nodes`: the exit nodes, by `Node` name;
+- `interval`: seconds an answer holds, 86400 when left out;
+- `install`: off, the list is counted and the kernel left alone;
+- `via`: optional, per family, a gateway of that family, a link, or both;
+- `include` and `exclude`: one kind per source, `asns`, `prefixes`, `country` or `hostnames`;
+  `label` keeps a source's networks from merging with another label's, and `ttl` overrides how
+  long its answers hold.
 
 The API server refuses a source of no kind or of two, a malformed AS number, network or country
-code, a gateway of the other family and a link name the kernel would refuse.
+code, a gateway of the other family and a link name the kernel would refuse. Every list and string
+is bounded, which the API server needs to size the rules' cost; CI applies the CRD and the example
+to a throwaway cluster, since no local evaluator sizes them.
 
 ## Development
 
