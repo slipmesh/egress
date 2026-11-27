@@ -92,9 +92,6 @@ impl Resolver {
 
     /// RIPEstat at `ripestat`, names through `config`.
     pub fn with_dns(ripestat: &str, config: ResolverConfig, options: ResolverOpts) -> Result<Self> {
-        // reqwest takes the process's provider; an error means one is installed, and ring is the
-        // only one built in.
-        let _ = rustls::crypto::ring::default_provider().install_default();
         let http = reqwest::Client::builder()
             .timeout(RIPESTAT_TIMEOUT)
             .user_agent(RIPESTAT_SOURCEAPP)
@@ -444,8 +441,8 @@ mod tests {
     use crate::crd::EgressSpec;
     use hickory_resolver::config::{ConnectionConfig, NameServerConfig};
     use hickory_resolver::proto::op::{Message, OpCode, ResponseCode};
-    use hickory_resolver::proto::rr::rdata::{A, AAAA};
-    use hickory_resolver::proto::rr::{RData, Record, RecordType};
+    use hickory_resolver::proto::rr::rdata::{A, AAAA, CNAME};
+    use hickory_resolver::proto::rr::{Name, RData, Record, RecordType};
     use serde_json::json;
     use std::net::IpAddr;
     use std::sync::{Arc, Mutex};
@@ -680,9 +677,20 @@ mod tests {
     enum Records {
         Found(Vec<IpAddr>, u32),
         Code(ResponseCode),
+        /// `ALIAS` is a CNAME to `TARGET`, which answers with `target`; `together` sends the
+        /// target's records in the CNAME's answer too.
+        Alias {
+            ttl: u32,
+            target: Box<Records>,
+            together: bool,
+        },
     }
 
-    /// A name server answering every name by its record type alone, and a resolver of no other.
+    const ALIAS: &str = "a.example.";
+    const TARGET: &str = "b.example.";
+
+    /// A name server answering every name by its record type alone but `ALIAS`, and a resolver of
+    /// no other.
     async fn name_server(a: Records, aaaa: Records) -> (ResolverConfig, ResolverOpts) {
         let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let address = socket.local_addr().unwrap();
@@ -700,17 +708,32 @@ mod tests {
                 let mut response = Message::response(request.metadata.id, OpCode::Query);
                 response.metadata.recursion_available = true;
                 response.add_query(query.clone());
+                let target = Name::from_ascii(TARGET).unwrap();
+                let (records, name) = match records {
+                    Records::Alias {
+                        ttl,
+                        target: records,
+                        together,
+                    } if query.name.to_ascii().eq_ignore_ascii_case(ALIAS) => {
+                        let alias = RData::CNAME(CNAME(target.clone()));
+                        response.add_answer(Record::from_rdata(query.name.clone(), *ttl, alias));
+                        (together.then_some(&**records), target)
+                    }
+                    Records::Alias { target, .. } => (Some(&**target), query.name.clone()),
+                    records => (Some(records), query.name.clone()),
+                };
                 match records {
-                    Records::Found(addresses, ttl) => {
+                    Some(Records::Found(addresses, ttl)) => {
                         for address in addresses {
                             let data = match address {
                                 IpAddr::V4(v4) => RData::A(A(*v4)),
                                 IpAddr::V6(v6) => RData::AAAA(AAAA(*v6)),
                             };
-                            response.add_answer(Record::from_rdata(query.name.clone(), *ttl, data));
+                            response.add_answer(Record::from_rdata(name.clone(), *ttl, data));
                         }
                     }
-                    Records::Code(code) => response.metadata.response_code = *code,
+                    Some(Records::Code(code)) => response.metadata.response_code = *code,
+                    Some(Records::Alias { .. }) | None => {}
                 }
                 socket
                     .send_to(&response.to_vec().unwrap(), from)
@@ -740,7 +763,7 @@ mod tests {
 
     async fn host(resolver: &Resolver, lifetime: Lifetime) -> Result<Answer> {
         resolver
-            .answer(&Query::Host("a.example".into()), lifetime)
+            .answer(&Query::Host(ALIAS.trim_end_matches('.').into()), lifetime)
             .await
     }
 
@@ -759,6 +782,57 @@ mod tests {
             "{:?}",
             answer.ttl
         );
+    }
+
+    /// The host behind an alias in each family in turn, the other without records.
+    async fn behind_an_alias(together: bool) -> Vec<(Vec<IpNet>, Duration)> {
+        let mut answers = Vec::new();
+        for (a, aaaa) in [
+            (Some(found(&["192.0.2.7"], 3000)), None),
+            (None, Some(found(&["2001:db8::7"], 3000))),
+        ] {
+            let alias = |target: Option<Records>| {
+                target.map_or(NODATA, |target| Records::Alias {
+                    ttl: 600,
+                    target: Box::new(target),
+                    together,
+                })
+            };
+            let resolver = asking(RIPESTAT, alias(a), alias(aaaa)).await;
+            let answer = host(&resolver, Lifetime::List(DAY)).await.unwrap();
+            answers.push((answer.networks, answer.ttl));
+        }
+        answers
+    }
+
+    #[tokio::test]
+    async fn an_alias_answered_with_its_target_gives_the_targets_addresses_held_for_the_alias() {
+        let answers = behind_an_alias(true).await;
+        assert_eq!(
+            answers
+                .iter()
+                .map(|(networks, _)| networks.clone())
+                .collect::<Vec<_>>(),
+            [nets(&["192.0.2.7/32"]), nets(&["2001:db8::7/128"])]
+        );
+        for (_, ttl) in answers {
+            assert!((secs(590)..=secs(600)).contains(&ttl), "{ttl:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_alias_answered_alone_is_followed_to_its_target() {
+        let answers = behind_an_alias(false).await;
+        assert_eq!(
+            answers
+                .iter()
+                .map(|(networks, _)| networks.clone())
+                .collect::<Vec<_>>(),
+            [nets(&["192.0.2.7/32"]), nets(&["2001:db8::7/128"])]
+        );
+        for (_, ttl) in answers {
+            assert!((secs(590)..=secs(600)).contains(&ttl), "{ttl:?}");
+        }
     }
 
     #[tokio::test]
