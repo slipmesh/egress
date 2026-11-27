@@ -1,5 +1,5 @@
 # Pull requests and pushes run the checks; only a merged release PR is built, in its own run, and
-# released as an image.
+# released as the image, with both CRDs and the DaemonSet attached.
 name: CI
 
 on:
