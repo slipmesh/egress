@@ -49,10 +49,6 @@ pub struct EgressSpec {
     /// Off, the list is counted and the kernel left alone.
     #[serde(default)]
     pub install: bool,
-    /// Absent, each family leaves through its default route's gateway.
-    #[schemars(with = "Via")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub via: Option<Via>,
     #[schemars(length(max = MAX_SOURCES))]
     pub include: Vec<Source>,
     #[schemars(length(max = MAX_SOURCES))]
@@ -97,42 +93,6 @@ pub struct Source {
     #[schemars(with = "u32")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ttl: Option<u32>,
-}
-
-#[derive(KubeSchema, Serialize, Deserialize, Debug, Clone, PartialEq)]
-#[x_kube(
-    validation = "!has(self.ipv4) || !has(self.ipv4.gateway) || (isIP(self.ipv4.gateway) && ip(self.ipv4.gateway).family() == 4)"
-)]
-#[x_kube(
-    validation = "!has(self.ipv6) || !has(self.ipv6.gateway) || (isIP(self.ipv6.gateway) && ip(self.ipv6.gateway).family() == 6)"
-)]
-#[cfg_attr(test, x_kube(cel))]
-#[serde(deny_unknown_fields)]
-pub struct Via {
-    #[schemars(with = "ViaFamily")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ipv4: Option<ViaFamily>,
-    #[schemars(with = "ViaFamily")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ipv6: Option<ViaFamily>,
-}
-
-/// A gateway of its family, a link, or both.
-#[derive(KubeSchema, Serialize, Deserialize, Debug, Clone, PartialEq)]
-#[x_kube(validation = "has(self.gateway) || has(self.interface)")]
-// What the kernel takes as a link name: 1 to 15 printable ASCII bytes but `/` and `:`, and
-// neither `.` nor `..`.
-#[x_kube(validation = "!has(self.interface) || self.interface.matches('^[!-.0-9;-~]{1,15}$')")]
-#[x_kube(validation = "!has(self.interface) || (self.interface != '.' && self.interface != '..')")]
-#[cfg_attr(test, x_kube(cel))]
-#[serde(deny_unknown_fields)]
-pub struct ViaFamily {
-    #[schemars(with = "String", length(max = 45))]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gateway: Option<String>,
-    #[schemars(with = "String", length(max = 15))]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub interface: Option<String>,
 }
 
 /// Each node's account, written by that node alone through server-side apply.
@@ -221,39 +181,6 @@ mod tests {
     }
 
     #[test]
-    fn a_way_out_names_a_gateway_of_its_own_family_or_a_link() {
-        accepted(
-            |value| Via::validate_cel(value, None).is_ok(),
-            &[
-                (json!({"ipv4": {"gateway": "192.0.2.1"}}), true),
-                (
-                    json!({"ipv6": {"gateway": "2001:db8::1", "interface": "eth0"}}),
-                    true,
-                ),
-                (json!({"ipv4": {"gateway": "2001:db8::1"}}), false),
-                (json!({"ipv6": {"gateway": "192.0.2.1"}}), false),
-                (json!({"ipv4": {"gateway": "gateway"}}), false),
-            ],
-        );
-        accepted(
-            |value| ViaFamily::validate_cel(value, None).is_ok(),
-            &[
-                (json!({"interface": "eth0"}), true),
-                (json!({"interface": "eth0.100"}), true),
-                (json!({}), false),
-                (json!({"interface": ""}), false),
-                (json!({"interface": "a-name-too-long0"}), false),
-                (json!({"interface": "eth0:1"}), false),
-                (json!({"interface": "eth/0"}), false),
-                (json!({"interface": "eth 0"}), false),
-                (json!({"interface": "."}), false),
-                (json!({"interface": ".."}), false),
-                (json!({"interface": "ëth0"}), false),
-            ],
-        );
-    }
-
-    #[test]
     fn what_a_cr_leaves_out_reads_as_the_schema_writes_it() {
         let read: EgressSpec =
             serde_json::from_value(json!({"nodes": ["node-a"], "include": [{"country": "XX"}]}))
@@ -291,7 +218,6 @@ mod tests {
         for source in spec["include"].as_array().unwrap() {
             Source::validate_cel(source, None).unwrap();
         }
-        Via::validate_cel(&spec["via"], None).unwrap();
         assert_eq!(egress.spec.include[3].ttl, Some(300));
     }
 
