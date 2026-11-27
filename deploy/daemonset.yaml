@@ -18,6 +18,10 @@ rules:
   - apiGroups: ["slipmesh.net"]
     resources: ["egresses/status"]
     verbs: ["patch"]
+  # Its own Node, by a name field selector, for the table and protocol of its routes.
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -49,14 +53,19 @@ spec:
         app: egress
     spec:
       serviceAccountName: egress
-      # The node's own routes are the ones it will install, and `/metrics` listens on the node's
+      # The node's own routes are the ones it installs, and `/metrics` listens on the node's
       # address.
       hostNetwork: true
       tolerations:
         - operator: Exists
+      priorityClassName: system-node-critical
       containers:
         - name: egress
           image: ghcr.io/slipmesh/egress:v0.1.0
+          # The node's routes.
+          securityContext:
+            capabilities:
+              add: [NET_ADMIN]
           # The node's InternalIP, never every address: on an exit node another one is public.
           args: ["run", "--metrics=$(HOST_IP):9478"]
           env:

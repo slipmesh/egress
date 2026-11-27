@@ -58,9 +58,10 @@ kubectl apply -f deploy/egress-crd.yaml -f deploy/daemonset.yaml
 ```
 
 [`deploy/daemonset.yaml`](deploy/daemonset.yaml) runs `egress run` on every node, in
-`kube-system`, with its ServiceAccount and the RBAC it needs: to watch every `Egress` and to patch
-their status. A pod resolves each `Egress` that names its node, `NODE_NAME` through the Downward
-API, and nothing else; it installs no route yet. Its answers live in memory: each is asked again
+`kube-system`, with its ServiceAccount and the RBAC it needs: to watch every `Egress` and its own
+`Node`, and to patch the lists' status; `NET_ADMIN` for the routes. A pod resolves each `Egress`
+that names its node, `NODE_NAME` through the Downward API, and nothing else. Its answers live in
+memory: each is asked again
 once its lifetime is over, and the list is composed again. A changed `spec` starts the list anew.
 After a query gives up, the list is tried again 3 min later.
 
@@ -73,6 +74,23 @@ failed one. A list that stops naming the node loses that entry.
 InternalIP, `status.hostIP`, and port 9478. The series are `slipmesh_egress_prefixes{egress,family}`,
 `slipmesh_egress_last_resolve_timestamp_seconds{egress}` and
 `slipmesh_egress_resolve_errors_total{egress}`.
+
+### Routes
+
+A list with `install` on has its networks routed out of the node. Every such list of a node shares
+one table and one protocol, the node's annotations `slipmesh.net/route_table.egress` (a number, or
+`main`) and `slipmesh.net/route_proto_id.egress`; without the table annotation the agent installs
+and deletes nothing. Each route leaves through the gateway and link of its family's default route
+in `main`, with metric 16 in both families, below BIRD's 32; a family without a default route gets
+no routes. The routes of the node's lists together are reconciled with the kernel's routes under
+that table and protocol after every resolve, change of a list or the annotations, and change to
+the kernel's links, routes or addresses, a burst of them waiting 1 s and giving one reconcile.
+
+The routes in the kernel are the last good list: a failed resolve leaves them, and none is deleted
+until every `Egress` has been listed and every installing list has resolved once since the start
+or its last change. Routes found under the table and protocol at the start, whoever installed
+them, are kept until then. A changed table or protocol deletes the routes under the old one.
+Stopping the agent leaves the routes.
 
 ## Development
 

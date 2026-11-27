@@ -30,10 +30,12 @@ schemars = "1.2.3"
 serde = { version = "1.0.229", features = ["derive"] }
 # The derive's code names it.
 serde_json = "1.0.154"
-sliplib-kube = { git = "https://github.com/slipmesh/sliplib", tag = "v0.28.0" }
-sliplib-net = { git = "https://github.com/slipmesh/sliplib", tag = "v0.28.0" }
-sliplib-runtime = { git = "https://github.com/slipmesh/sliplib", tag = "v0.28.0", features = ["metrics"] }
-sliplib-yaml = { git = "https://github.com/slipmesh/sliplib", tag = "v0.28.0" }
+# The annotations that give the route table and protocol.
+sliplib-config = { git = "https://github.com/slipmesh/sliplib", tag = "v0.28.1" }
+sliplib-kube = { git = "https://github.com/slipmesh/sliplib", tag = "v0.28.1" }
+sliplib-net = { git = "https://github.com/slipmesh/sliplib", tag = "v0.28.1", features = ["netlink"] }
+sliplib-runtime = { git = "https://github.com/slipmesh/sliplib", tag = "v0.28.1", features = ["metrics"] }
+sliplib-yaml = { git = "https://github.com/slipmesh/sliplib", tag = "v0.28.1" }
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 tracing = "0.1.44"
 
