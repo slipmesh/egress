@@ -21,12 +21,29 @@ jobs:
   checks:
     uses: slipmesh/.github/.github/workflows/rust.yml@v4.0.2
 
+  # The API server's own checks of the CRD, its rules' cost among them, which no local evaluator
+  # estimates, and the example against them.
+  apiserver:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: helm/kind-action@ea822c7bf1874f08e5a491df991c228edffc3376 # v1.15.2
+
+      - name: apply
+        run: |
+          kubectl apply -f deploy/egress-crd.yaml
+          kubectl wait --for condition=established --timeout=60s crd/egresses.slipmesh.net
+          kubectl apply --dry-run=server -f docs/example/egress.yaml
+
   release-commit:
     if: github.event_name == 'push'
     uses: slipmesh/.github/.github/workflows/release-commit.yml@v4.0.2
 
   build:
-    needs: [release-commit, checks]
+    needs: [release-commit, checks, apiserver]
     if: needs.release-commit.outputs.version != ''
     uses: slipmesh/.github/.github/workflows/rust-build.yml@v4.0.2
     with:
