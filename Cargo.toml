@@ -14,8 +14,8 @@ name = "egress"
 path = "src/main.rs"
 
 [dependencies]
-anyhow = "1.0.104"
-clap = { version = "4.6.9", features = ["derive"] }
+anyhow = "1.0.105"
+clap = { version = "4.6.10", features = ["derive"] }
 # Each answer's TTL, which tokio's lookup gives none of.
 hickory-resolver = "0.26.4"
 # The Kubernetes version the agent is built for, and `Condition`'s schema.
