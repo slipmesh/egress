@@ -89,8 +89,9 @@ the kernel's links, routes or addresses, a burst of them waiting 1 s and giving 
 The routes in the kernel are the last good list: a failed resolve leaves them, and none is deleted
 until every `Egress` has been listed and every installing list has resolved once since the start
 or its last change. Routes found under the table and protocol at the start, whoever installed
-them, are kept until then. A changed table or protocol deletes the routes under the old one.
-Stopping the agent leaves the routes.
+them, are kept until then. A table or protocol changed while the agent runs deletes the routes
+under the old one; one changed while it is stopped leaves them. Stopping the agent leaves the
+routes.
 
 ## Development
 

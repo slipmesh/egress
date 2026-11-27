@@ -62,10 +62,13 @@ spec:
       containers:
         - name: egress
           image: ghcr.io/slipmesh/egress:v0.1.0
-          # The node's routes.
+          # Root, which an added capability needs, with the node's routes and nothing more.
           securityContext:
             capabilities:
+              drop: [ALL]
               add: [NET_ADMIN]
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
           # The node's InternalIP, never every address: on an exit node another one is public.
           args: ["run", "--metrics=$(HOST_IP):9478"]
           env:

@@ -72,6 +72,15 @@ pub fn routes(
         .collect()
 }
 
+/// The networks to route: `networks`, and until `may_delete` every destination `listed`, which
+/// stands in for the lists not yet resolved and follows the default route as they do.
+fn to_route(mut networks: BTreeSet<IpNet>, listed: &[Route], may_delete: bool) -> BTreeSet<IpNet> {
+    if !may_delete {
+        networks.extend(listed.iter().map(|route| route.destination));
+    }
+    networks
+}
+
 /// What turns the kernel's `listed` routes into `wanted`: the routes to delete, then the routes to
 /// replace. Nothing is deleted until `may_delete`.
 pub fn plan(wanted: &[Route], listed: &[Route], may_delete: bool) -> (Vec<Route>, Vec<Route>) {
@@ -198,16 +207,34 @@ fn retired(installed_under: Option<Tag>, tag: Option<Tag>) -> Option<Tag> {
     installed_under.filter(|old| Some(*old) != tag)
 }
 
+/// Logs a route that `action` failed on, keeping the first failure.
+fn noted(
+    first: &mut Option<anyhow::Error>,
+    action: &'static str,
+    route: &Route,
+    result: Result<(), sliplib_net::route::Error>,
+) {
+    if let Err(e) = result {
+        let e = anyhow::Error::from(e);
+        tracing::warn!(action, %route, error = format!("{e:#}"), "a route failed");
+        first.get_or_insert(e);
+    }
+}
+
 /// Deletes the routes under a tag no longer given, then makes the kernel's routes under `tag` the
-/// `networks`.
+/// `networks`. A route that fails is left for the next reconcile, and the rest go on.
 async fn reconcile(
     rt: &RtClient,
     (tag, networks, may_delete): (Option<Tag>, BTreeSet<IpNet>, bool),
     installed_under: &mut Option<Tag>,
 ) -> Result<()> {
+    let mut failed = None;
     if let Some(old) = retired(*installed_under, tag) {
         for route in rt.routes(old.table, old.protocol).await? {
-            rt.route_del(&route).await?;
+            noted(&mut failed, "delete", &route, rt.route_del(&route).await);
+        }
+        if let Some(e) = failed {
+            return Err(e);
         }
         tracing::info!(
             table = old.table,
@@ -219,15 +246,16 @@ async fn reconcile(
     let Some(tag) = tag else { return Ok(()) };
     let v4 = rt.default_route(Family::Ipv4).await?;
     let v6 = rt.default_route(Family::Ipv6).await?;
-    let wanted = routes(networks, tag, v4.as_ref(), v6.as_ref());
     let listed = rt.routes(tag.table, tag.protocol).await?;
+    let networks = to_route(networks, &listed, may_delete);
+    let wanted = routes(networks, tag, v4.as_ref(), v6.as_ref());
     let (delete, replace) = plan(&wanted, &listed, may_delete);
     // Deletes first: one without a metric may take the route of any metric at its destination.
     for route in &delete {
-        rt.route_del(route).await?;
+        noted(&mut failed, "delete", route, rt.route_del(route).await);
     }
     for route in &replace {
-        rt.route_replace(route).await?;
+        noted(&mut failed, "replace", route, rt.route_replace(route).await);
     }
     if !delete.is_empty() || !replace.is_empty() {
         tracing::info!(
@@ -236,7 +264,7 @@ async fn reconcile(
             "routes installed"
         );
     }
-    Ok(())
+    failed.map_or(Ok(()), Err)
 }
 
 #[cfg(test)]
@@ -374,6 +402,37 @@ mod tests {
         assert!(get().2);
         installer.forget("a");
         assert_eq!(get().1, nets(&["192.0.2.0/24"]).into_iter().collect());
+    }
+
+    #[test]
+    fn until_deletes_may_run_every_listed_destination_is_routed_too() {
+        let networks: BTreeSet<IpNet> = nets(&["192.0.2.0/24"]).into_iter().collect();
+        let listed = [route("198.51.100.0/24", "192.0.2.254", 3, ROUTE_METRIC)];
+        assert_eq!(
+            to_route(networks.clone(), &listed, false),
+            nets(&["192.0.2.0/24", "198.51.100.0/24"])
+                .into_iter()
+                .collect()
+        );
+        assert_eq!(to_route(networks.clone(), &listed, true), networks);
+    }
+
+    #[test]
+    fn a_failed_route_is_kept_first_so_the_reconcile_is_tried_again() {
+        let refused = |reason: &str| {
+            Err(sliplib_net::route::Error::Invalid {
+                action: "replace",
+                route: String::new(),
+                reason: reason.to_owned(),
+            })
+        };
+        let route = route("192.0.2.0/24", "192.0.2.1", 2, ROUTE_METRIC);
+        let mut first = None;
+        noted(&mut first, "replace", &route, Ok(()));
+        assert!(first.is_none());
+        noted(&mut first, "replace", &route, refused("first"));
+        noted(&mut first, "replace", &route, refused("second"));
+        assert!(format!("{:#}", first.unwrap()).contains("first"));
     }
 
     #[test]

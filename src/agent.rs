@@ -205,13 +205,15 @@ pub async fn run(
             }
             Ok(watcher::Event::InitDone) => {
                 for name in gone(lists.keys(), &listed) {
-                    stop(&mut lists, &metrics, &installer, &name).await;
+                    stop(&mut lists, &metrics, &name).await;
+                    installer.forget(&name);
                 }
                 installer.listed();
             }
             Ok(watcher::Event::Delete(egress)) => {
                 let name = egress.metadata.name.unwrap_or_default();
-                stop(&mut lists, &metrics, &installer, &name).await;
+                stop(&mut lists, &metrics, &name).await;
+                installer.forget(&name);
             }
             Err(e) => tracing::warn!(error = %e, "watch of the Egress resources failed, retrying"),
         }
@@ -261,15 +263,19 @@ async fn changed(
     ) {
         Action::Keep | Action::Ignore => {}
         Action::Start => {
-            stop(lists, metrics, installer, &name).await;
+            stop(lists, metrics, &name).await;
             tracing::info!(
                 egress = name,
                 generation,
                 install = egress.spec.install,
                 "resolving"
             );
+            // In one step: the installer must not see the list gone in between and delete its
+            // routes.
             if egress.spec.install {
                 installer.pending(&name);
+            } else {
+                installer.forget(&name);
             }
             let task = tokio::spawn(keep_resolved(
                 api.clone(),
@@ -282,7 +288,8 @@ async fn changed(
             lists.insert(name, (version, task));
         }
         Action::Leave => {
-            stop(lists, metrics, installer, &name).await;
+            stop(lists, metrics, &name).await;
+            installer.forget(&name);
             tracing::info!(egress = name, "no longer names this node");
             let unowned = json!({"apiVersion": "slipmesh.net/v1alpha1", "kind": "Egress"});
             if let Err(e) = api
@@ -313,14 +320,13 @@ fn gone<'a>(running: impl Iterator<Item = &'a String>, listed: &HashSet<String>)
         .collect()
 }
 
-/// Ends the list's task, then drops its series and its routes: an aborted task stops only at its
-/// next await, and could write them again in between.
-async fn stop(lists: &mut Lists, metrics: &Metrics, installer: &Installer, name: &str) {
+/// Ends the list's task, then drops its series: an aborted task stops only at its next await, and
+/// could write them again in between. The installer still holds the list's networks.
+async fn stop(lists: &mut Lists, metrics: &Metrics, name: &str) {
     if let Some((_, task)) = lists.remove(name) {
         task.abort();
         let _ = task.await;
         metrics.forget(name);
-        installer.forget(name);
     }
 }
 
