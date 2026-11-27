@@ -3,7 +3,7 @@
 
 use crate::crd::Egress;
 use crate::install::{self, Installer};
-use crate::resolve::{self, Answer, Asked, Resolver};
+use crate::resolve::{self, Answer, Asked, Endpoints, Lifetime, Resolver};
 use anyhow::{Context, Result};
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::Node;
@@ -17,12 +17,14 @@ use prometheus_client::metrics::family::Family;
 use prometheus_client::metrics::gauge::Gauge;
 use prometheus_client::registry::Registry;
 use serde_json::{Value, json};
+use sliplib_config::mesh_object::{self, Mesh};
 use sliplib_kube::{Agent, ApiTimeouts};
 use sliplib_net::IpNet;
 use sliplib_runtime::Shutdown;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 /// After a query gave up, the list is tried again after this.
@@ -133,6 +135,17 @@ type Version = (String, i64);
 /// The lists being resolved, by name.
 type Lists = HashMap<String, (Version, JoinHandle<()>)>;
 
+/// What every list's task shares.
+#[derive(Clone)]
+struct Shared {
+    api: Api<Egress>,
+    resolver: Arc<Resolver>,
+    metrics: Arc<Metrics>,
+    installer: Arc<Installer>,
+    node: String,
+    mesh: watch::Receiver<Endpoints>,
+}
+
 fn action(
     running: Option<&Version>,
     version: &Version,
@@ -147,8 +160,8 @@ fn action(
     }
 }
 
-/// Watches every `Egress` and this node until `shutdown`, resolving the lists that name it and
-/// installing those that install.
+/// Watches every `Egress`, this node and the `Mesh` until `shutdown`, resolving the lists that name
+/// it and installing those that install.
 pub async fn run(
     agent: Agent,
     shutdown: Shutdown,
@@ -156,8 +169,16 @@ pub async fn run(
     metrics: Arc<Metrics>,
 ) -> Result<()> {
     let api: Api<Egress> = Api::all(agent.client.clone());
-    let resolver = Arc::new(Resolver::new(resolve::RIPESTAT)?);
     let installer = Arc::new(Installer::default());
+    let (mesh, _) = watch::channel(Endpoints::Unread);
+    let shared = Shared {
+        api: api.clone(),
+        resolver: Arc::new(Resolver::new(resolve::RIPESTAT)?),
+        metrics,
+        installer: Arc::clone(&installer),
+        node: agent.node.clone(),
+        mesh: mesh.subscribe(),
+    };
     let rt = sliplib_net::route::RtClient::connect().context("failed to open rtnetlink")?;
     let changes = sliplib_net::route::link_route_and_address_changes()
         .context("failed to follow the kernel's routes")?;
@@ -165,12 +186,17 @@ pub async fn run(
         let installer = Arc::clone(&installer);
         async move { install::keep_installed(rt, changes, &installer).await }
     });
-    let node = agent.node;
     let mut node_events = std::pin::pin!(sliplib_kube::watch_one::<Node>(
-        Api::all(agent.client),
-        &node,
+        Api::all(agent.client.clone()),
+        &agent.node,
         timeouts
     ));
+    let mut mesh_events = std::pin::pin!(sliplib_kube::watch_one::<Mesh>(
+        Api::all(agent.client),
+        mesh_object::NAME,
+        timeouts
+    ));
+    let mut relisted = Endpoints::Absent;
     let mut lists = Lists::new();
     let mut listed = HashSet::new();
     let config = watcher::Config::default().timeout(timeouts.watch_secs);
@@ -185,6 +211,10 @@ pub async fn run(
                 tagged(&installer, event);
                 continue;
             }
+            Some(event) = mesh_events.next() => {
+                read_mesh(&mesh, &mut relisted, event);
+                continue;
+            }
             () = shutdown.requested() => break,
         };
         let Some(event) = event else { break };
@@ -192,27 +222,21 @@ pub async fn run(
             Ok(watcher::Event::Init) => listed.clear(),
             Ok(watcher::Event::InitApply(egress)) => {
                 listed.insert(egress.metadata.name.clone().unwrap_or_default());
-                changed(
-                    &api, &resolver, &metrics, &installer, &node, &mut lists, egress,
-                )
-                .await;
+                changed(&shared, &mut lists, egress).await;
             }
             Ok(watcher::Event::Apply(egress)) => {
-                changed(
-                    &api, &resolver, &metrics, &installer, &node, &mut lists, egress,
-                )
-                .await;
+                changed(&shared, &mut lists, egress).await;
             }
             Ok(watcher::Event::InitDone) => {
                 for name in gone(lists.keys(), &listed) {
-                    stop(&mut lists, &metrics, &name).await;
+                    stop(&mut lists, &shared.metrics, &name).await;
                     installer.forget(&name);
                 }
                 installer.listed();
             }
             Ok(watcher::Event::Delete(egress)) => {
                 let name = egress.metadata.name.unwrap_or_default();
-                stop(&mut lists, &metrics, &name).await;
+                stop(&mut lists, &shared.metrics, &name).await;
                 installer.forget(&name);
             }
             Err(e) => tracing::warn!(error = %e, "watch of the Egress resources failed, retrying"),
@@ -242,15 +266,45 @@ fn tagged(installer: &Installer, event: watcher::Result<watcher::Event<Node>>) {
     installer.set_tag(tag);
 }
 
-async fn changed(
-    api: &Api<Egress>,
-    resolver: &Arc<Resolver>,
-    metrics: &Arc<Metrics>,
-    installer: &Arc<Installer>,
-    node: &str,
-    lists: &mut Lists,
-    egress: Egress,
+/// The endpoints of the `Mesh` as its watch reads it, handed on only when they change. A relist
+/// reads it in full: one deleted while the watch was down shows only as a relist without it.
+fn read_mesh(
+    sender: &watch::Sender<Endpoints>,
+    relisted: &mut Endpoints,
+    event: watcher::Result<watcher::Event<Mesh>>,
 ) {
+    let read = match event {
+        Ok(watcher::Event::Init) => {
+            *relisted = Endpoints::Absent;
+            return;
+        }
+        Ok(watcher::Event::InitApply(mesh)) => {
+            *relisted = Endpoints::of(&mesh.spec);
+            return;
+        }
+        Ok(watcher::Event::InitDone) => std::mem::replace(relisted, Endpoints::Absent),
+        Ok(watcher::Event::Apply(mesh)) => Endpoints::of(&mesh.spec),
+        Ok(watcher::Event::Delete(_)) => Endpoints::Absent,
+        Err(e) => {
+            tracing::warn!(error = %e, "watch of the Mesh failed, retrying");
+            return;
+        }
+    };
+    sender.send_if_modified(|current| {
+        let changed = *current != read;
+        *current = read;
+        changed
+    });
+}
+
+async fn changed(shared: &Shared, lists: &mut Lists, egress: Egress) {
+    let Shared {
+        api,
+        metrics,
+        installer,
+        node,
+        ..
+    } = shared;
     let name = egress.metadata.name.clone().unwrap_or_default();
     let generation = egress.metadata.generation.unwrap_or_default();
     let version = (egress.metadata.uid.clone().unwrap_or_default(), generation);
@@ -277,14 +331,7 @@ async fn changed(
             } else {
                 installer.forget(&name);
             }
-            let task = tokio::spawn(keep_resolved(
-                api.clone(),
-                Arc::clone(resolver),
-                Arc::clone(metrics),
-                Arc::clone(installer),
-                node.to_owned(),
-                egress,
-            ));
+            let task = tokio::spawn(keep_resolved(shared.clone(), egress));
             lists.insert(name, (version, task));
         }
         Action::Leave => {
@@ -335,15 +382,25 @@ fn field_manager(node: &str) -> PatchParams {
 }
 
 /// Resolves `egress` for as long as it runs: each answer again once its lifetime is over, the
-/// list composed, handed to the installer if it installs, and its status applied after each round.
-async fn keep_resolved(
-    api: Api<Egress>,
-    resolver: Arc<Resolver>,
-    metrics: Arc<Metrics>,
-    installer: Arc<Installer>,
-    node: String,
-    egress: Egress,
-) {
+/// list composed less the mesh's endpoints, handed to the installer if it installs, and its status
+/// applied after each round. A change of the endpoints starts a round at once.
+async fn keep_resolved(shared: Shared, egress: Egress) {
+    let Shared {
+        api,
+        resolver,
+        metrics,
+        installer,
+        node,
+        mut mesh,
+    } = shared;
+    // Before the first read every list would fail, after a restart too.
+    if mesh
+        .wait_for(|read| *read != Endpoints::Unread)
+        .await
+        .is_err()
+    {
+        return;
+    }
     let name = egress.metadata.name.unwrap_or_default();
     let generation = egress.metadata.generation.unwrap_or_default();
     let spec = egress.spec;
@@ -352,7 +409,8 @@ async fn keep_resolved(
     let mut last = Last::default();
     loop {
         let now = SystemTime::now();
-        let outcome = round(&resolver, &asked, &mut answers, now).await;
+        let endpoints = mesh.borrow_and_update().clone();
+        let outcome = round(&resolver, &asked, &mut answers, &endpoints, now).await;
         let mut wait = match &outcome {
             Ok(networks) => {
                 let counts = counts(networks);
@@ -378,28 +436,44 @@ async fn keep_resolved(
             tracing::warn!(egress = name, error = %e, "failed to apply the status");
             wait = wait.min(AFTER_FAILURE);
         }
-        tokio::time::sleep(wait).await;
+        tokio::select! {
+            () = tokio::time::sleep(wait) => {}
+            Ok(()) = mesh.changed() => {}
+        }
     }
 }
 
-/// Answers every query `due` at `now`, then composes the list.
+/// Answers every query `due` at `now` and every endpoint, then composes the list less the
+/// endpoints.
 async fn round(
     resolver: &Resolver,
     asked: &[Asked],
     answers: &mut [Option<Answer>],
+    endpoints: &Endpoints,
     now: SystemTime,
 ) -> Result<Vec<IpNet>> {
+    let endpoints = endpoints.queries()?;
     let due = due(answers, now);
-    let fresh = futures::future::try_join_all(
-        due.iter()
-            .map(|&i| resolver.answer(&asked[i].query, asked[i].lifetime)),
-    )
-    .await?;
-    for (i, answer) in due.into_iter().zip(fresh) {
+    // Both run to the end, so a failed endpoint keeps the fresh answers.
+    let (fresh, cuts) = futures::join!(
+        futures::future::try_join_all(
+            due.iter()
+                .map(|&i| resolver.answer(&asked[i].query, asked[i].lifetime)),
+        ),
+        // Asked every round, so no lifetime applies.
+        futures::future::try_join_all(endpoints.iter().map(|query| async move {
+            resolver
+                .answer(query, Lifetime::Source(Duration::ZERO))
+                .await
+                .with_context(|| format!("endpoint {query:?}"))
+        })),
+    );
+    for (i, answer) in due.into_iter().zip(fresh?) {
         answers[i] = Some(answer);
     }
     let answered: Vec<&Answer> = answers.iter().flatten().collect();
-    resolve::compose(asked, &answered, &[])
+    let excluded: Vec<IpNet> = cuts?.into_iter().flat_map(|cut| cut.networks).collect();
+    resolve::compose(asked, &answered, &excluded)
 }
 
 /// The answers never given or past their lifetime at `now`.

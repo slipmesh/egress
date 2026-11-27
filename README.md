@@ -6,11 +6,11 @@ The egress agent of [slipmesh](https://github.com/slipmesh): a DaemonSet that re
 ## The `Egress` resource
 
 `slipmesh.net/v1alpha1`, cluster-scoped, one per list. [`deploy/egress-crd.yaml`](deploy/egress-crd.yaml)
-is its CRD, as `egress crd` prints it; a test fails when the two differ, so after a change to the
+is its CRD, as `egress crd egress` prints it; a test fails when the two differ, so after a change to the
 types, write it again:
 
 ```bash
-cargo run -- crd > deploy/egress-crd.yaml
+cargo run -- crd egress > deploy/egress-crd.yaml
 ```
 
 [`docs/example/egress.yaml`](docs/example/egress.yaml) is a list with every field:
@@ -40,6 +40,15 @@ holds for `spec.ttl`, and a host's for its records' shortest TTL, at most `spec.
 60 s, even where `spec.ttl` is shorter. The answers merge within their label, an empty label being
 none, and every network of `exclude` is cut out of them.
 
+Every node's endpoint is cut out too, so no list routes the mesh's own tunnels. The endpoints come
+from the `Mesh` called `mesh`, which `slipmesh manifest` writes; its CRD is
+[`deploy/mesh-crd.yaml`](deploy/mesh-crd.yaml), as `egress crd mesh` prints it, checked by the same
+test. A list's first resolve waits until the agent has read it. Each endpoint is asked again on
+every resolve, a host name with both families, and a change to the endpoints composes every list
+again at once. Without that object, or with an endpoint failing to look up, the resolve fails.
+While the `Mesh` cannot be read, its CRD not applied or the ClusterRole without `meshes`, the agent
+logs the failed watch and nothing resolves; the status a previous pod left stays as it was.
+
 A list's queries run at once. Each RIPEstat request has 90 s and each family of a host 15 s; a
 query that fails is asked again, up to six attempts, waiting 5 s and twice as long after each
 failure, at most 3 min. A RIPEstat error, an answer of the wrong shape or over 64 MiB, and either
@@ -54,12 +63,13 @@ the other.
 ## Running the agent
 
 ```bash
-kubectl apply -f deploy/egress-crd.yaml -f deploy/daemonset.yaml
+kubectl apply -f deploy/egress-crd.yaml -f deploy/mesh-crd.yaml -f deploy/daemonset.yaml
+slipmesh manifest --in <files> | kubectl apply -f -
 ```
 
 [`deploy/daemonset.yaml`](deploy/daemonset.yaml) runs `egress run` on every node, in
-`kube-system`, with its ServiceAccount and the RBAC it needs: to watch every `Egress` and its own
-`Node`, and to patch the lists' status; `NET_ADMIN` for the routes. A pod resolves each `Egress`
+`kube-system`, with its ServiceAccount and the RBAC it needs: to watch every `Egress`, its own
+`Node` and the `Mesh`, and to patch the lists' status; `NET_ADMIN` for the routes. A pod resolves each `Egress`
 that names its node, `NODE_NAME` through the Downward API, and nothing else. Its answers live in
 memory: each is asked again
 once its lifetime is over, and the list is composed again. A changed `spec` starts the list anew.

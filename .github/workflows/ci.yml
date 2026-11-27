@@ -21,7 +21,7 @@ jobs:
   checks:
     uses: slipmesh/.github/.github/workflows/rust.yml@v4.0.2
 
-  # The API server's own checks of the CRD, its rules' cost among them, which no local evaluator
+  # The API server's own checks of the CRDs, their rules' cost among them, which no local evaluator
   # estimates, the example against them, and the DaemonSet and its RBAC.
   apiserver:
     runs-on: ubuntu-26.04
@@ -34,8 +34,8 @@ jobs:
 
       - name: apply
         run: |
-          kubectl apply -f deploy/egress-crd.yaml
-          kubectl wait --for condition=established --timeout=60s crd/egresses.slipmesh.net
+          kubectl apply -f deploy/egress-crd.yaml -f deploy/mesh-crd.yaml
+          kubectl wait --for condition=established --timeout=60s crd/egresses.slipmesh.net crd/meshes.slipmesh.net
           kubectl apply --dry-run=server -f docs/example/egress.yaml
           kubectl apply --dry-run=server -f deploy/daemonset.yaml
 

@@ -1,5 +1,5 @@
 # The agent on every node: a pod on a node no `Egress` names watches and does nothing else. Apply
-# it after `egress-crd.yaml`. The image carries a released tag, never `:latest`.
+# it after `egress-crd.yaml` and `mesh-crd.yaml`. The image carries a released tag, never `:latest`.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -18,6 +18,10 @@ rules:
   - apiGroups: ["slipmesh.net"]
     resources: ["egresses/status"]
     verbs: ["patch"]
+  # The `Mesh` called `mesh`, by a name field selector, for the endpoints every list leaves out.
+  - apiGroups: ["slipmesh.net"]
+    resources: ["meshes"]
+    verbs: ["list", "watch"]
   # Its own Node, by a name field selector, for the table and protocol of its routes.
   - apiGroups: [""]
     resources: ["nodes"]
