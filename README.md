@@ -16,7 +16,7 @@ cargo run -- crd > deploy/egress-crd.yaml
 [`docs/example/egress.yaml`](docs/example/egress.yaml) is a list with every field:
 
 - `nodes`: the exit nodes, by `Node` name;
-- `interval`: seconds an answer holds, 86400 when left out;
+- `ttl`: seconds an answer holds, 86400 when left out;
 - `install`: off, the list is counted and the kernel left alone;
 - `via`: optional, per family, a gateway of that family, a link, or both;
 - `include` and `exclude`: one kind per source, `asns`, `prefixes`, `country` or `hostnames`;

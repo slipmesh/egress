@@ -5,7 +5,7 @@ metadata:
   name: example
 spec:
   nodes: [node-a]
-  interval: 86400
+  ttl: 86400
   install: false
   via:
     ipv4: {gateway: 192.0.2.1}

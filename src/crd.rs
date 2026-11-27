@@ -6,7 +6,7 @@ use kube::{CustomResource, KubeSchema};
 use serde::{Deserialize, Serialize};
 
 /// What the schema writes where a CR leaves it out, so the stored object always has it.
-const DEFAULT_INTERVAL_SECONDS: u32 = 86_400;
+const DEFAULT_TTL_SECONDS: u32 = 86_400;
 
 // Every list and string is bounded: the API server sizes a CEL rule's cost from the bounds, and
 // refuses the CRD without them.
@@ -14,8 +14,8 @@ const MAX_NODES: u32 = 100;
 const MAX_SOURCES: u32 = 100;
 const MAX_VALUES: u32 = 1000;
 
-fn default_interval() -> u32 {
-    DEFAULT_INTERVAL_SECONDS
+fn default_ttl() -> u32 {
+    DEFAULT_TTL_SECONDS
 }
 
 /// Read strictly: a new field reaches the agents before any CR carries it.
@@ -29,12 +29,12 @@ fn default_interval() -> u32 {
     status = "EgressStatus",
     printcolumn = r#"{"name": "Nodes", "type": "string", "jsonPath": ".spec.nodes"}"#,
     printcolumn = r#"{"name": "Install", "type": "boolean", "jsonPath": ".spec.install"}"#,
-    printcolumn = r#"{"name": "Interval", "type": "integer", "jsonPath": ".spec.interval"}"#,
+    printcolumn = r#"{"name": "TTL", "type": "integer", "jsonPath": ".spec.ttl"}"#,
     printcolumn = r#"{"name": "Age", "type": "date", "jsonPath": ".metadata.creationTimestamp"}"#
 )]
 #[x_kube(validation = "size(self.nodes) > 0")]
 #[x_kube(validation = "size(self.include) > 0")]
-#[x_kube(validation = "self.interval >= 1")]
+#[x_kube(validation = "self.ttl >= 1")]
 #[cfg_attr(test, x_kube(cel))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EgressSpec {
@@ -42,9 +42,10 @@ pub struct EgressSpec {
     #[schemars(length(max = MAX_NODES), inner(length(max = 253)))]
     #[schemars(extend("x-kubernetes-list-type" = "set"))]
     pub nodes: Vec<String>,
-    /// Seconds from one resolution to the next.
-    #[serde(default = "default_interval")]
-    pub interval: u32,
+    /// Seconds an answer holds before it is resolved again, unless its source says otherwise or it
+    /// is a host's, whose records' own TTL counts within it.
+    #[serde(default = "default_ttl")]
+    pub ttl: u32,
     /// Off, the list is counted and the kernel left alone.
     #[serde(default)]
     pub install: bool,
@@ -92,8 +93,7 @@ pub struct Source {
     #[schemars(with = "Vec<String>", length(max = MAX_VALUES), inner(length(max = 253)))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hostnames: Option<Vec<String>>,
-    /// Seconds every network of this source holds before it is resolved again, over the list's
-    /// and a host record's own.
+    /// Seconds every answer of this source holds, over the list's `ttl` and a host record's own.
     #[schemars(with = "u32")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ttl: Option<u32>,
@@ -212,7 +212,7 @@ mod tests {
 
     #[test]
     fn a_spec_names_a_node_and_includes_something() {
-        let spec = |nodes: Value, include: Value, interval: u32| json!({"nodes": nodes, "include": include, "interval": interval, "install": false});
+        let spec = |nodes: Value, include: Value, ttl: u32| json!({"nodes": nodes, "include": include, "ttl": ttl, "install": false});
         let source = json!([{"country": "XX"}]);
         accepted(
             |value| EgressSpec::validate_cel(value, None).is_ok(),
@@ -263,17 +263,11 @@ mod tests {
         let read: EgressSpec =
             serde_json::from_value(json!({"nodes": ["node-a"], "include": [{"country": "XX"}]}))
                 .unwrap();
-        assert_eq!(
-            (read.interval, read.install),
-            (DEFAULT_INTERVAL_SECONDS, false)
-        );
+        assert_eq!((read.ttl, read.install), (DEFAULT_TTL_SECONDS, false));
 
         let crd = serde_json::to_value(Egress::crd()).unwrap();
         let spec = &crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"];
-        assert_eq!(
-            spec["properties"]["interval"]["default"],
-            DEFAULT_INTERVAL_SECONDS
-        );
+        assert_eq!(spec["properties"]["ttl"]["default"], DEFAULT_TTL_SECONDS);
         assert_eq!(spec["properties"]["install"]["default"], false);
     }
 
