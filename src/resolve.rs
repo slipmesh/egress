@@ -110,16 +110,14 @@ pub enum Endpoints {
 
 impl Endpoints {
     /// Every node's endpoint as written, each once; none of a node behind NAT.
-    pub fn of(mesh: Option<&MeshSpec>) -> Self {
-        mesh.map_or(Self::Absent, |mesh| {
-            Self::Hosts(
-                mesh.nodes
-                    .values()
-                    .filter_map(|node| node.endpoint.as_ref())
-                    .map(|endpoint| endpoint.host().to_owned())
-                    .collect(),
-            )
-        })
+    pub fn of(mesh: &MeshSpec) -> Self {
+        Self::Hosts(
+            mesh.nodes
+                .values()
+                .filter_map(|node| node.endpoint.as_ref())
+                .map(|endpoint| endpoint.host().to_owned())
+                .collect(),
+        )
     }
 
     /// One host query per endpoint.
@@ -756,13 +754,12 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            Endpoints::of(Some(&mesh)).queries().unwrap(),
+            Endpoints::of(&mesh).queries().unwrap(),
             [
                 Query::Host("192.0.2.1".into()),
                 Query::Host("node-b.example.com".into())
             ]
         );
-        assert_eq!(Endpoints::of(None), Endpoints::Absent);
         assert!(Endpoints::Absent.queries().is_err());
     }
 }

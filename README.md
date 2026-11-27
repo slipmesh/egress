@@ -46,6 +46,8 @@ from the `Mesh` called `mesh`, which `slipmesh manifest` writes; its CRD is
 test. A list's first resolve waits until the agent has read it. Each endpoint is asked again on
 every resolve, a host name with both families, and a change to the endpoints composes every list
 again at once. Without that object, or with an endpoint failing to look up, the resolve fails.
+While the `Mesh` cannot be read, its CRD not applied or the ClusterRole without `meshes`, the agent
+logs the failed watch and nothing resolves; the status a previous pod left stays as it was.
 
 A list's queries run at once. Each RIPEstat request has 90 s and each family of a host 15 s; a
 query that fails is asked again, up to six attempts, waiting 5 s and twice as long after each
@@ -62,6 +64,7 @@ the other.
 
 ```bash
 kubectl apply -f deploy/egress-crd.yaml -f deploy/mesh-crd.yaml -f deploy/daemonset.yaml
+slipmesh manifest --in <files> | kubectl apply -f -
 ```
 
 [`deploy/daemonset.yaml`](deploy/daemonset.yaml) runs `egress run` on every node, in

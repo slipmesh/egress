@@ -279,11 +279,11 @@ fn read_mesh(
             return;
         }
         Ok(watcher::Event::InitApply(mesh)) => {
-            *relisted = Endpoints::of(Some(&mesh.spec));
+            *relisted = Endpoints::of(&mesh.spec);
             return;
         }
         Ok(watcher::Event::InitDone) => std::mem::replace(relisted, Endpoints::Absent),
-        Ok(watcher::Event::Apply(mesh)) => Endpoints::of(Some(&mesh.spec)),
+        Ok(watcher::Event::Apply(mesh)) => Endpoints::of(&mesh.spec),
         Ok(watcher::Event::Delete(_)) => Endpoints::Absent,
         Err(e) => {
             tracing::warn!(error = %e, "watch of the Mesh failed, retrying");
@@ -454,7 +454,8 @@ async fn round(
 ) -> Result<Vec<IpNet>> {
     let endpoints = endpoints.queries()?;
     let due = due(answers, now);
-    let (fresh, cuts) = futures::try_join!(
+    // Both run to the end, so a failed endpoint keeps the fresh answers.
+    let (fresh, cuts) = futures::join!(
         futures::future::try_join_all(
             due.iter()
                 .map(|&i| resolver.answer(&asked[i].query, asked[i].lifetime)),
@@ -466,12 +467,12 @@ async fn round(
                 .await
                 .with_context(|| format!("endpoint {query:?}"))
         })),
-    )?;
-    for (i, answer) in due.into_iter().zip(fresh) {
+    );
+    for (i, answer) in due.into_iter().zip(fresh?) {
         answers[i] = Some(answer);
     }
     let answered: Vec<&Answer> = answers.iter().flatten().collect();
-    let excluded: Vec<IpNet> = cuts.into_iter().flat_map(|cut| cut.networks).collect();
+    let excluded: Vec<IpNet> = cuts?.into_iter().flat_map(|cut| cut.networks).collect();
     resolve::compose(asked, &answered, &excluded)
 }
 
