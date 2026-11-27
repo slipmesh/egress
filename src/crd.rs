@@ -156,11 +156,6 @@ pub struct NodeStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_at: Option<Time>,
     pub prefixes: FamilyCounts,
-    pub routes: FamilyCounts,
-    /// `sha256:` and the hex digest of the sorted list, one network per line.
-    #[schemars(with = "String", length(max = 71))]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub digest: Option<String>,
     #[schemars(extend("x-kubernetes-list-type" = "map", "x-kubernetes-list-map-keys" = ["type"]))]
     #[schemars(length(max = 8))]
     #[serde(default)]
@@ -281,8 +276,6 @@ mod tests {
                 "observedGeneration": 1,
                 "resolvedAt": "2026-01-01T00:00:00Z",
                 "prefixes": {"ipv4": 2, "ipv6": 1},
-                "routes": {"ipv4": 0, "ipv6": 0},
-                "digest": format!("sha256:{}", "0".repeat(64)),
                 "conditions": [{
                     "type": "Resolved",
                     "status": "True",

@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sliplib_net::IpNet;
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::net::IpAddr;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -53,11 +54,49 @@ pub enum Lifetime {
     List(Duration),
 }
 
-/// Every answer of a list, in the order its sources ask, and the networks they make.
+/// One query of a list: whether it includes or excludes, its source's label, and how long its
+/// answer holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Resolved {
-    pub answers: Vec<(Query, Answer)>,
-    pub networks: Vec<IpNet>,
+pub struct Asked {
+    pub include: bool,
+    pub label: Option<String>,
+    pub query: Query,
+    pub lifetime: Lifetime,
+}
+
+/// Every query of `spec`, its includes first, in the order written.
+pub fn asked(spec: &EgressSpec) -> Vec<Asked> {
+    let list = Duration::from_secs(spec.ttl.into());
+    [(true, &spec.include), (false, &spec.exclude)]
+        .into_iter()
+        .flat_map(|(include, sources)| {
+            sources.iter().flat_map(move |source| {
+                let lifetime = source.ttl.map_or(Lifetime::List(list), |ttl| {
+                    Lifetime::Source(Duration::from_secs(ttl.into()))
+                });
+                queries(source).into_iter().map(move |query| Asked {
+                    include,
+                    label: source.label.clone(),
+                    query,
+                    lifetime,
+                })
+            })
+        })
+        .collect()
+}
+
+/// The list `answers`, one for each of `asked`, make, less `excluded`.
+pub fn compose(asked: &[Asked], answers: &[&Answer], excluded: &[IpNet]) -> Result<Vec<IpNet>> {
+    let mut include = Vec::new();
+    let mut exclude = Vec::new();
+    for (asked, answer) in asked.iter().zip(answers) {
+        if asked.include {
+            include.push((asked.label.clone(), answer.networks.clone()));
+        } else {
+            exclude.extend(&answer.networks);
+        }
+    }
+    list(&include, &exclude, excluded)
 }
 
 /// RIPEstat's documented limit is 8 concurrent requests per address; this stays under it.
@@ -107,49 +146,6 @@ impl Resolver {
         })
     }
 
-    /// Every query of `spec` answered and merged, less `excluded`. A query that gives up fails
-    /// the list.
-    pub async fn resolve(&self, spec: &EgressSpec, excluded: &[IpNet]) -> Result<Resolved> {
-        let list_ttl = Duration::from_secs(spec.ttl.into());
-        let asked: Vec<(bool, &Option<String>, Query, Lifetime)> =
-            [(true, &spec.include), (false, &spec.exclude)]
-                .into_iter()
-                .flat_map(|(include, sources)| {
-                    sources.iter().flat_map(move |source| {
-                        let lifetime = source.ttl.map_or(Lifetime::List(list_ttl), |ttl| {
-                            Lifetime::Source(Duration::from_secs(ttl.into()))
-                        });
-                        queries(source)
-                            .into_iter()
-                            .map(move |query| (include, &source.label, query, lifetime))
-                    })
-                })
-                .collect();
-        let answers = futures::future::try_join_all(
-            asked
-                .iter()
-                .map(|(.., query, lifetime)| self.answer(query, *lifetime)),
-        )
-        .await?;
-        let mut include = Vec::new();
-        let mut exclude = Vec::new();
-        for ((included, label, ..), answer) in asked.iter().zip(&answers) {
-            if *included {
-                include.push(((*label).clone(), answer.networks.clone()));
-            } else {
-                exclude.extend(&answer.networks);
-            }
-        }
-        Ok(Resolved {
-            networks: list(&include, &exclude, excluded)?,
-            answers: asked
-                .into_iter()
-                .map(|(.., query, _)| query)
-                .zip(answers)
-                .collect(),
-        })
-    }
-
     /// `query` resolved now, holding for `lifetime`.
     pub async fn answer(&self, query: &Query, lifetime: Lifetime) -> Result<Answer> {
         let resolved_at = SystemTime::now();
@@ -157,7 +153,7 @@ impl Resolver {
             Query::Prefixes(prefixes) => (literal(prefixes)?, None),
             Query::Asn(_) | Query::Country(_) => {
                 let url = ripestat_url(&self.ripestat, query)?;
-                let networks = retry(async || ripestat_networks(query, &self.get(&url).await?))
+                let networks = retry(|| async { ripestat_networks(query, &self.get(&url).await?) })
                     .await
                     .with_context(|| format!("{query:?} from RIPEstat"))?;
                 (networks, None)
@@ -166,8 +162,8 @@ impl Resolver {
                 Ok(address) => (vec![IpNet::from(address)], None),
                 Err(_) => {
                     let (v4, v6) = tokio::join!(
-                        retry(async || family(self.lookup(host, RecordType::A).await)),
-                        retry(async || family(self.lookup(host, RecordType::AAAA).await)),
+                        retry(|| async { family(self.lookup(host, RecordType::A).await) }),
+                        retry(|| async { family(self.lookup(host, RecordType::AAAA).await) }),
                     );
                     let (networks, valid_until) = both_families(host, v4?, v6?)?;
                     let ttl = valid_until.saturating_duration_since(Instant::now());
@@ -218,7 +214,7 @@ impl Resolver {
 }
 
 /// `attempt` until it succeeds or has failed `ATTEMPTS` times, the last error returned.
-async fn retry<T>(mut attempt: impl AsyncFnMut() -> Result<T>) -> Result<T> {
+async fn retry<T, F: Future<Output = Result<T>>>(mut attempt: impl FnMut() -> F) -> Result<T> {
     let mut backoff = FIRST_BACKOFF;
     for _ in 1..ATTEMPTS {
         match attempt().await {
@@ -647,12 +643,12 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_query_is_retried_with_a_growing_backoff_until_it_succeeds_or_gives_up() {
         let started = tokio::time::Instant::now();
-        let mut failures = 2;
-        let succeeded = retry(async || {
-            if failures == 0 {
+        let failures = std::cell::Cell::new(2);
+        let succeeded = retry(|| async {
+            if failures.get() == 0 {
                 return Ok(());
             }
-            failures -= 1;
+            failures.set(failures.get() - 1);
             bail!("failed")
         })
         .await;
@@ -660,20 +656,20 @@ mod tests {
         assert_eq!(started.elapsed(), FIRST_BACKOFF * 3);
 
         let started = tokio::time::Instant::now();
-        let mut attempts = 0;
-        let gave_up: Result<()> = retry(async || {
-            attempts += 1;
+        let attempts = std::cell::Cell::new(0);
+        let gave_up: Result<()> = retry(|| async {
+            attempts.set(attempts.get() + 1);
             bail!("failed")
         })
         .await;
         assert!(gave_up.is_err());
-        assert_eq!(attempts, ATTEMPTS);
+        assert_eq!(attempts.get(), ATTEMPTS);
         // 5 + 10 + 20 + 40 + 80 s.
         assert_eq!(started.elapsed(), secs(155));
     }
 
-    #[tokio::test]
-    async fn a_list_answers_each_source_for_its_own_lifetime_less_its_exclusions() {
+    #[test]
+    fn a_list_asks_each_source_for_its_own_lifetime_and_is_composed_less_its_exclusions() {
         let spec: EgressSpec = sliplib_yaml::from_str(
             "{nodes: [node-a], ttl: 3600, include: [
                 {label: a, prefixes: [192.0.2.0/24]},
@@ -681,20 +677,37 @@ mod tests {
             ], exclude: [{prefixes: [192.0.2.0/25]}]}",
         )
         .unwrap();
-        let resolved = Resolver::new(RIPESTAT)
-            .unwrap()
-            .resolve(&spec, &nets(&["203.0.113.0/25"]))
-            .await
-            .unwrap();
+        let asked = asked(&spec);
+        let shape: Vec<_> = asked
+            .iter()
+            .map(|asked| (asked.include, asked.label.as_deref(), asked.lifetime))
+            .collect();
         assert_eq!(
-            resolved.networks,
+            shape,
+            [
+                (true, Some("a"), Lifetime::List(secs(3600))),
+                (true, None, Lifetime::Source(secs(60))),
+                (false, None, Lifetime::List(secs(3600))),
+            ]
+        );
+        let answer = |net: &str| Answer {
+            networks: nets(&[net]),
+            resolved_at: SystemTime::UNIX_EPOCH,
+            ttl: secs(60),
+        };
+        let answers = [
+            answer("192.0.2.0/24"),
+            answer("203.0.113.0/24"),
+            answer("192.0.2.0/25"),
+        ];
+        assert_eq!(
+            compose(
+                &asked,
+                &answers.iter().collect::<Vec<_>>(),
+                &nets(&["203.0.113.0/25"])
+            )
+            .unwrap(),
             nets(&["192.0.2.128/25", "203.0.113.128/25"])
         );
-        let lifetimes: Vec<Duration> = resolved
-            .answers
-            .iter()
-            .map(|(_, answer)| answer.ttl)
-            .collect();
-        assert_eq!(lifetimes, [secs(3600), secs(60), secs(3600)]);
     }
 }

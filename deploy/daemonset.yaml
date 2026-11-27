@@ -1,0 +1,81 @@
+# The agent on every node: a pod on a node no `Egress` names watches and does nothing else. Apply
+# it after `egress-crd.yaml`. The image carries a released tag, never `:latest`.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: egress
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: egress
+rules:
+  - apiGroups: ["slipmesh.net"]
+    resources: ["egresses"]
+    verbs: ["get", "list", "watch"]
+  # Each node applies its own entry of the status, and nothing else.
+  - apiGroups: ["slipmesh.net"]
+    resources: ["egresses/status"]
+    verbs: ["patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: egress
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: egress
+subjects:
+  - kind: ServiceAccount
+    name: egress
+    namespace: kube-system
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: egress
+  namespace: kube-system
+  labels:
+    app: egress
+spec:
+  selector:
+    matchLabels:
+      app: egress
+  template:
+    metadata:
+      labels:
+        app: egress
+    spec:
+      serviceAccountName: egress
+      # The node's own routes are the ones it will install, and `/metrics` listens on the node's
+      # address.
+      hostNetwork: true
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: egress
+          image: ghcr.io/slipmesh/egress:v0.1.0
+          # The node's InternalIP, never every address: on an exit node another one is public.
+          args: ["run", "--metrics=$(HOST_IP):9478"]
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: HOST_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: RUST_LOG
+              value: info
+          ports:
+            - name: metrics
+              containerPort: 9478
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 256Mi
