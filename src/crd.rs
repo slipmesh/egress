@@ -6,7 +6,7 @@ use kube::{CustomResource, KubeSchema};
 use serde::{Deserialize, Serialize};
 
 /// What the schema writes where a CR leaves it out, so the stored object always has it.
-const DEFAULT_INTERVAL_SECONDS: u32 = 86_400;
+pub const DEFAULT_INTERVAL_SECONDS: u32 = 86_400;
 
 fn default_interval() -> u32 {
     DEFAULT_INTERVAL_SECONDS

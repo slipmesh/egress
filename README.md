@@ -36,6 +36,18 @@ spec:
 The API server refuses a source of no kind or of two, a malformed AS number, network or country
 code, a gateway of the other family and a link name the kernel would refuse.
 
+## Moving the lists of a version 1 file
+
+`egress-export <file>` prints one `Egress` per `bypass` list of a `slipmesh.yaml` of format
+version 1, named for its node, and writes nothing. It reads the file through sliplib v0.19.0, the
+last release that reads that version. A literal source's prefixes become one source per label, a
+geoip source without a label gets the label the daemon gives it, and the refresh interval is
+written out, the daemon's default where the file has none. Routes stay off.
+
+```bash
+cargo run --bin egress-export -- slipmesh.yaml > egress.yaml
+```
+
 ## Development
 
 ```bash

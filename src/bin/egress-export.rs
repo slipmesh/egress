@@ -1,0 +1,186 @@
+//! One-off: prints the `Egress` resources of the `bypass` lists of a `slipmesh.yaml` of format
+//! version 1, one per list, named for its node.
+
+use anyhow::{Context, Result, bail};
+use clap::Parser;
+use egress::crd::{Egress, EgressSpec, Source};
+use sliplib_config_v1::router::{BypassSourceEntry, DEFAULT_BYPASS_REFRESH_INTERVAL_SECS};
+use sliplib_config_v1::slipmesh_file::SlipmeshFile;
+use std::path::PathBuf;
+
+#[derive(Parser)]
+#[command(
+    version,
+    about = "Print the Egress resources of a version 1 slipmesh.yaml's bypass lists"
+)]
+struct Cli {
+    /// Read, never written.
+    file: PathBuf,
+}
+
+fn main() -> Result<()> {
+    let cli = Cli::parse();
+    let raw = std::fs::read_to_string(&cli.file)
+        .with_context(|| format!("failed to read {}", cli.file.display()))?;
+    print!("{}", manifests(&raw)?);
+    Ok(())
+}
+
+/// Every list as YAML documents.
+fn manifests(raw: &str) -> Result<String> {
+    let file = SlipmeshFile::parse(raw).context("failed to read the file as format version 1")?;
+    let topology = file.topology();
+    let interval = topology
+        .cluster
+        .bypass_refresh_interval_secs
+        .unwrap_or(DEFAULT_BYPASS_REFRESH_INTERVAL_SECS);
+    let interval = u32::try_from(interval)
+        .with_context(|| format!("cluster.bypass_refresh_interval_secs {interval} is too long"))?;
+    let mut documents = Vec::new();
+    for entry in &topology.bypass {
+        let spec = EgressSpec {
+            nodes: vec![entry.node.clone()],
+            interval,
+            install: false,
+            via: None,
+            include: sources(&entry.include)
+                .with_context(|| format!("bypass of {}", entry.node))?,
+            exclude: sources(&entry.exclude)
+                .with_context(|| format!("bypass of {}", entry.node))?,
+        };
+        documents.push(yaml_serde::to_string(&Egress::new(&entry.node, spec))?);
+    }
+    Ok(documents.join("---\n"))
+}
+
+/// A literal source's prefixes go one source per label, in the order the labels first appear:
+/// the daemon merges networks within a label alone, and a source has one.
+fn sources(entries: &[BypassSourceEntry]) -> Result<Vec<Source>> {
+    let mut out = Vec::new();
+    for entry in entries {
+        let label = entry.label.clone().filter(|label| !label.is_empty());
+        match entry.kind.as_str() {
+            "literal" => {
+                let mut by_label: Vec<(Option<String>, Vec<String>)> = Vec::new();
+                for prefix in entry.prefixes.iter().flatten() {
+                    let label = prefix.label.clone().filter(|label| !label.is_empty());
+                    match by_label.iter_mut().find(|(seen, _)| *seen == label) {
+                        Some((_, nets)) => nets.push(prefix.net.clone()),
+                        None => by_label.push((label, vec![prefix.net.clone()])),
+                    }
+                }
+                out.extend(by_label.into_iter().map(|(label, nets)| Source {
+                    label,
+                    prefixes: Some(nets),
+                    ..Source::default()
+                }));
+            }
+            "asn" => out.push(Source {
+                label,
+                asns: entry.asns.clone(),
+                ..Source::default()
+            }),
+            "dns" => out.push(Source {
+                label,
+                hostnames: entry.hostnames.clone(),
+                ..Source::default()
+            }),
+            "geoip" => {
+                let country = entry
+                    .country
+                    .as_deref()
+                    .context("a geoip source without `country`")?
+                    .to_ascii_uppercase();
+                out.push(Source {
+                    // The daemon's label for a geoip source without one.
+                    label: label.or_else(|| Some(format!("geoip {country}"))),
+                    country: Some(country),
+                    ..Source::default()
+                });
+            }
+            other => bail!("unknown bypass source kind {other:?}"),
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const V1: &str = r#"slipmesh:
+  kind: network
+cluster:
+  bgp_as: 64512
+  loopback_networks: {ipv4: "198.51.100.0/25", ipv6: "3fff::/32"}
+  bypass_refresh_interval_secs: 3600
+nodes:
+  - {name: node-a, node_id: "198.51.100.1"}
+  - {name: node-b, node_id: "198.51.100.2"}
+bypass:
+  - node: node-a
+    include:
+      - {kind: asn, label: example, asns: [AS64496, AS64497]}
+      - kind: literal
+        prefixes:
+          - {net: 192.0.2.0/25, label: one}
+          - {net: 198.51.100.128/25}
+          - {net: 192.0.2.128/25, label: one}
+      - {kind: geoip, country: xx}
+      - {kind: dns, label: names, hostnames: [example.com]}
+    exclude:
+      - kind: literal
+        prefixes: [{net: 203.0.113.0/24}]
+  - node: node-b
+    include:
+      - {kind: geoip, label: country, country: XX}
+"#;
+
+    fn yaml(text: &str) -> Vec<serde_json::Value> {
+        text.split("\n---\n")
+            .map(|document| yaml_serde::from_str(document).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn each_list_becomes_an_egress_of_its_node_with_every_source_kept() {
+        assert_eq!(
+            yaml(&manifests(V1).unwrap()),
+            yaml(
+                "apiVersion: slipmesh.net/v1alpha1
+kind: Egress
+metadata: {name: node-a}
+spec:
+  nodes: [node-a]
+  interval: 3600
+  install: false
+  include:
+    - {label: example, asns: [AS64496, AS64497]}
+    - {label: one, prefixes: [192.0.2.0/25, 192.0.2.128/25]}
+    - {prefixes: [198.51.100.128/25]}
+    - {label: geoip XX, country: XX}
+    - {label: names, hostnames: [example.com]}
+  exclude:
+    - {prefixes: [203.0.113.0/24]}
+---
+apiVersion: slipmesh.net/v1alpha1
+kind: Egress
+metadata: {name: node-b}
+spec:
+  nodes: [node-b]
+  interval: 3600
+  install: false
+  include:
+    - {label: country, country: XX}"
+            )
+        );
+    }
+
+    #[test]
+    fn a_file_without_a_refresh_interval_gets_the_daemons_default_written_out() {
+        let without = V1.replace("  bypass_refresh_interval_secs: 3600\n", "");
+        for egress in yaml(&manifests(&without).unwrap()) {
+            assert_eq!(egress["spec"]["interval"], 86_400, "{egress}");
+        }
+    }
+}
