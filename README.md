@@ -39,11 +39,12 @@ holds for `spec.ttl`, and a host's for its records' shortest TTL, at most `spec.
 60 s, even where `spec.ttl` is shorter. The answers merge within their label, an empty label being
 none, and every network of `exclude` and every mesh endpoint is cut out of them.
 
-A list's queries run at once. One that fails fails the whole resolve: a RIPEstat error, an answer
-of the wrong shape or over 64 MiB, or either family of a host failing to look up, though a family
-without records is only empty. So do a host with no address, a list with nothing left, and a
-resolve that outlasts its budget of 90 s per round of five RIPEstat requests plus 15 s for the
-hosts.
+A list's queries run at once. Each RIPEstat request has 90 s and each family of a host 15 s; a
+query that fails is asked again, up to six attempts, waiting 5 s and twice as long after each
+failure, at most 3 min. A RIPEstat error, an answer of the wrong shape or over 64 MiB, and either
+family of a host failing to look up are failures; a family without records is only empty. The
+resolve fails once one query has given up, and so do a host with no address and a list with
+nothing left.
 
 The router daemon of the Talos extensions keeps its own IPv4-only copy of this resolver for format
 version 1 until that daemon stops resolving lists; a defect found in one copy is checked against

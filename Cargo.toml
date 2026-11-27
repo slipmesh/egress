@@ -40,5 +40,5 @@ tracing = "0.1.44"
 
 [dev-dependencies]
 tempfile = "3.27.0"
-tokio = { version = "1.54.1", features = ["net", "io-util", "test-util"] }
+tokio = { version = "1.54.1", features = ["test-util"] }
 kube = { version = "5.2.0", default-features = false, features = ["cel", "derive"] }
