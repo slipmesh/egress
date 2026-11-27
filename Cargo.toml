@@ -7,7 +7,6 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/slipmesh/egress"
 # Ships as an image, never to crates.io.
 publish = false
-default-run = "egress"
 description = "The egress agent: resolves each Egress list on the nodes it names and routes it out through them"
 
 [[bin]]
@@ -29,9 +28,6 @@ reqwest = { version = "0.13.5", default-features = false, features = ["rustls"] 
 prometheus-client = "0.26.0"
 schemars = "1.2.3"
 serde = { version = "1.0.229", features = ["derive"] }
-# The last release that reads format version 1, for `egress-export` alone.
-sliplib-config-v1 = { package = "sliplib-config", git = "https://github.com/slipmesh/sliplib", tag = "v0.19.0" }
-sliplib-net-v1 = { package = "sliplib-net", git = "https://github.com/slipmesh/sliplib", tag = "v0.19.0" }
 # The derive's code names it.
 serde_json = "1.0.154"
 sliplib-kube = { git = "https://github.com/slipmesh/sliplib", tag = "v0.28.0" }
@@ -42,6 +38,5 @@ tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "sync", "
 tracing = "0.1.44"
 
 [dev-dependencies]
-tempfile = "3.27.0"
 tokio = { version = "1.54.1", features = ["test-util"] }
 kube = { version = "5.2.0", default-features = false, features = ["cel", "derive"] }
