@@ -24,10 +24,11 @@ schemars = "1.2.3"
 serde = { version = "1.0.229", features = ["derive"] }
 # The last release that reads format version 1, for `egress-export` alone.
 sliplib-config-v1 = { package = "sliplib-config", git = "https://github.com/slipmesh/sliplib", tag = "v0.19.0" }
+sliplib-net-v1 = { package = "sliplib-net", git = "https://github.com/slipmesh/sliplib", tag = "v0.19.0" }
 # The derive's code names it.
 serde_json = "1.0.154"
 yaml_serde = "0.10.7"
 
 [dev-dependencies]
+tempfile = "3.27.0"
 kube = { version = "5.2.0", default-features = false, features = ["cel", "derive"] }
-serde_json = "1.0.154"

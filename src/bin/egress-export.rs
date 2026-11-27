@@ -1,5 +1,5 @@
 //! One-off: prints the `Egress` resources of the `bypass` lists of a `slipmesh.yaml` of format
-//! version 1, one per list, named for its node.
+//! version 1, one per node, named for it.
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
@@ -36,19 +36,31 @@ fn manifests(raw: &str) -> Result<String> {
         .unwrap_or(DEFAULT_BYPASS_REFRESH_INTERVAL_SECS);
     let ttl = u32::try_from(ttl)
         .with_context(|| format!("cluster.bypass_refresh_interval_secs {ttl} is too long"))?;
-    let mut documents = Vec::new();
+    // Version 1 merges a node's entries in file order: one exclude cuts another entry's includes,
+    // and a label merges across them.
+    let mut by_node: Vec<(&str, Vec<BypassSourceEntry>, Vec<BypassSourceEntry>)> = Vec::new();
     for entry in &topology.bypass {
+        let index = match by_node.iter().position(|(node, ..)| *node == entry.node) {
+            Some(index) => index,
+            None => {
+                by_node.push((&entry.node, Vec::new(), Vec::new()));
+                by_node.len() - 1
+            }
+        };
+        by_node[index].1.extend(entry.include.iter().cloned());
+        by_node[index].2.extend(entry.exclude.iter().cloned());
+    }
+    let mut documents = Vec::new();
+    for (node, include, exclude) in by_node {
         let spec = EgressSpec {
-            nodes: vec![entry.node.clone()],
+            nodes: vec![node.to_owned()],
             ttl,
             install: false,
             via: None,
-            include: sources(&entry.include)
-                .with_context(|| format!("bypass of {}", entry.node))?,
-            exclude: sources(&entry.exclude)
-                .with_context(|| format!("bypass of {}", entry.node))?,
+            include: sources(&include).with_context(|| format!("bypass of {node}"))?,
+            exclude: sources(&exclude).with_context(|| format!("bypass of {node}"))?,
         };
-        documents.push(yaml_serde::to_string(&Egress::new(&entry.node, spec))?);
+        documents.push(yaml_serde::to_string(&Egress::new(node, spec))?);
     }
     Ok(documents.join("---\n"))
 }
@@ -57,16 +69,26 @@ fn manifests(raw: &str) -> Result<String> {
 /// the daemon merges networks within a label alone, and a source has one.
 fn sources(entries: &[BypassSourceEntry]) -> Result<Vec<Source>> {
     let mut out = Vec::new();
+    // The daemon takes a missing label and an empty one as the same group.
+    let labelled = |label: Option<String>| label.filter(|label| !label.is_empty());
     for entry in entries {
-        let label = entry.label.clone().filter(|label| !label.is_empty());
+        let label = labelled(entry.label.clone());
         match entry.kind.as_str() {
             "literal" => {
+                let prefixes = entry
+                    .prefixes
+                    .as_ref()
+                    .context("a literal source without `prefixes`")?;
                 let mut by_label: Vec<(Option<String>, Vec<String>)> = Vec::new();
-                for prefix in entry.prefixes.iter().flatten() {
-                    let label = prefix.label.clone().filter(|label| !label.is_empty());
+                for prefix in prefixes {
+                    let label = labelled(prefix.label.clone());
+                    // As the daemon read it: the CRD takes no zero before a prefix length.
+                    let net = sliplib_net_v1::parse(&prefix.net)
+                        .with_context(|| format!("literal prefix {:?}", prefix.net))?
+                        .to_string();
                     match by_label.iter_mut().find(|(seen, _)| *seen == label) {
-                        Some((_, nets)) => nets.push(prefix.net.clone()),
-                        None => by_label.push((label, vec![prefix.net.clone()])),
+                        Some((_, nets)) => nets.push(net),
+                        None => by_label.push((label, vec![net])),
                     }
                 }
                 out.extend(by_label.into_iter().map(|(label, nets)| Source {
@@ -91,9 +113,13 @@ fn sources(entries: &[BypassSourceEntry]) -> Result<Vec<Source>> {
                     .as_deref()
                     .context("a geoip source without `country`")?
                     .to_ascii_uppercase();
+                // The daemon fills in a label only where none is written; an empty one stays.
+                let label = match &entry.label {
+                    None => Some(format!("geoip {country}")),
+                    Some(label) => labelled(Some(label.clone())),
+                };
                 out.push(Source {
-                    // The daemon's label for a geoip source without one.
-                    label: label.or_else(|| Some(format!("geoip {country}"))),
+                    label,
                     country: Some(country),
                     ..Source::default()
                 });
@@ -134,6 +160,15 @@ bypass:
   - node: node-b
     include:
       - {kind: geoip, label: country, country: XX}
+  - node: node-a
+    include:
+      - {kind: geoip, label: "", country: XY}
+      - kind: literal
+        prefixes:
+          - {net: 192.0.2.0/024, label: ""}
+          - {net: 3fff::/20}
+    exclude:
+      - {kind: dns, label: names, hostnames: [example.net]}
 "#;
 
     fn yaml(text: &str) -> Vec<serde_json::Value> {
@@ -143,7 +178,7 @@ bypass:
     }
 
     #[test]
-    fn each_list_becomes_an_egress_of_its_node_with_every_source_kept() {
+    fn the_lists_of_each_node_become_one_egress_in_file_order_with_every_source_kept() {
         assert_eq!(
             yaml(&manifests(V1).unwrap()),
             yaml(
@@ -160,8 +195,11 @@ spec:
     - {prefixes: [198.51.100.128/25]}
     - {label: geoip XX, country: XX}
     - {label: names, hostnames: [example.com]}
+    - {country: XY}
+    - {prefixes: [192.0.2.0/24, 3fff::/20]}
   exclude:
     - {prefixes: [203.0.113.0/24]}
+    - {label: names, hostnames: [example.net]}
 ---
 apiVersion: slipmesh.net/v1alpha1
 kind: Egress
@@ -174,6 +212,16 @@ spec:
     - {label: country, country: XX}"
             )
         );
+    }
+
+    #[test]
+    fn a_literal_source_without_prefixes_is_refused_naming_its_node() {
+        let without = V1.replace(
+            "      - {kind: dns, label: names, hostnames: [example.com]}\n",
+            "      - {kind: literal, label: empty}\n",
+        );
+        let refused = format!("{:#}", manifests(&without).unwrap_err());
+        assert!(refused.contains("node-a"), "{refused}");
     }
 
     #[test]
