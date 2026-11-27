@@ -36,6 +36,19 @@ spec:
 The API server refuses a source of no kind or of two, a malformed AS number, network or country
 code, a gateway of the other family and a link name the kernel would refuse.
 
+## Resolving a list
+
+Each source is asked as one query per AS number, country or host name, or one for its literal
+prefixes; both families are kept. AS numbers and countries go to
+[RIPEstat](https://stat.ripe.net/docs/data-api/) (announced prefixes, country resources), host
+names to the system's resolver. A RIPEstat or literal answer holds for `spec.interval`; a host's
+for its records' shortest TTL, at least 60 s and at most the interval. The answers merge within
+their label, and every network of `exclude` and every mesh endpoint is cut out of them. One query
+that fails, or a list with nothing left, fails the whole resolve, and the last good list stays.
+
+The router daemon of the Talos extensions keeps its own IPv4-only copy of this resolver for format
+version 1 until that daemon stops resolving lists; neither copy follows the other.
+
 ## Moving the lists of a version 1 file
 
 `egress-export <file>` prints one `Egress` per `bypass` list of a `slipmesh.yaml` of format
