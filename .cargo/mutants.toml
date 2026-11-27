@@ -1,0 +1,4 @@
+exclude_re = [
+    # Its one command prints the CRD, which CI compares with deploy/.
+    "replace main -> Result<\\(\\)> with Ok\\(\\(\\)\\)",
+]

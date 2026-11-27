@@ -3,6 +3,39 @@
 The egress agent of [slipmesh](https://github.com/slipmesh): a DaemonSet that resolves each
 `Egress` list on the exit nodes it names and routes the result out through them.
 
+## The `Egress` resource
+
+`slipmesh.net/v1alpha1`, cluster-scoped, one per list. [`deploy/egress-crd.yaml`](deploy/egress-crd.yaml)
+is its CRD, as `egress crd` prints it; CI fails when the two differ, so after a change to the
+types, write it again:
+
+```bash
+cargo run -- crd > deploy/egress-crd.yaml
+```
+
+```yaml
+apiVersion: slipmesh.net/v1alpha1
+kind: Egress
+metadata:
+  name: example
+spec:
+  nodes: [node-a]               # the exit nodes, by Node name
+  interval: 86400               # seconds between resolutions, 86400 when left out
+  install: false                # off: count the list, leave the kernel alone
+  via:                          # optional, per family: a gateway of its family, a link, or both
+    ipv4: {gateway: 192.0.2.1}
+  include:                      # one kind per source; `label` keeps its networks apart
+    - {label: example, asns: [AS64496]}
+    - {prefixes: [192.0.2.0/24, 2001:db8::/32]}
+    - {country: XX}
+    - {hostnames: [example.com]}
+  exclude:
+    - {prefixes: [192.0.2.128/25]}
+```
+
+The API server refuses a source of no kind or of two, a malformed AS number, network or country
+code, a gateway of the other family and a link name the kernel would refuse.
+
 ## Development
 
 ```bash
