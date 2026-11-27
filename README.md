@@ -12,11 +12,23 @@ cargo test
 cargo deny --locked check licenses bans sources
 ```
 
-CI runs the same on every pull request and every push to `main`, for the x86-64 and arm64 musl
-targets, and `cargo audit`, which also runs weekly. The licenses a dependency may come with are the
-ones [`deny.toml`](deny.toml) allows; [`about.toml`](about.toml) repeats them for the notices a
-release attaches, rendered through [`about.hbs`](about.hbs). Code style:
+CI runs the same on every pull request and every push to `main` and `release-*`: fmt, deny and
+the notices once, clippy and the tests for each of the x86-64 and arm64 musl targets, and
+`cargo audit`, which also runs weekly. The licenses a dependency may come with are the ones
+[`deny.toml`](deny.toml) allows; [`about.toml`](about.toml) repeats them for the notices the image
+carries, rendered through [`about.hbs`](about.hbs). Code style:
 [docs/CODESTYLE.md](docs/CODESTYLE.md).
+
+## Release
+
+1. Run the Release PR workflow under Actions, with a version or none to take it from the commits
+   since the last tag. It opens `chore: release vX.Y.Z`, which bumps `Cargo.toml` and
+   `Cargo.lock` and regenerates `CHANGELOG.md`.
+2. Merging that pull request builds `ghcr.io/slipmesh/egress:sha-<commit>`, tags it `vX.Y.Z`, tags
+   the commit and creates a GitHub Release with no assets.
+
+Every other push and pull request only checks; a pull request also builds the image and pushes
+nothing.
 
 ## License
 
