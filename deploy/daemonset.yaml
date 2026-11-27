@@ -13,7 +13,7 @@ metadata:
 rules:
   - apiGroups: ["slipmesh.net"]
     resources: ["egresses"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["list", "watch"]
   # Each node applies its own entry of the status, and nothing else.
   - apiGroups: ["slipmesh.net"]
     resources: ["egresses/status"]

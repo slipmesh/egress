@@ -124,9 +124,21 @@ enum Action {
     Ignore,
 }
 
-fn action(running: Option<i64>, generation: i64, names_node: bool, has_entry: bool) -> Action {
+/// One object's spec: its uid, so a list deleted and made again under the same name is another,
+/// and its generation.
+type Version = (String, i64);
+
+/// The lists being resolved, by name.
+type Lists = HashMap<String, (Version, JoinHandle<()>)>;
+
+fn action(
+    running: Option<&Version>,
+    version: &Version,
+    names_node: bool,
+    has_entry: bool,
+) -> Action {
     match (names_node, running) {
-        (true, Some(running)) if running == generation => Action::Keep,
+        (true, Some(running)) if running == version => Action::Keep,
         (true, _) => Action::Start,
         (false, _) if running.is_some() || has_entry => Action::Leave,
         (false, _) => Action::Ignore,
@@ -143,7 +155,7 @@ pub async fn run(
     let api: Api<Egress> = Api::all(agent.client);
     let resolver = Arc::new(Resolver::new(resolve::RIPESTAT)?);
     let node = agent.node;
-    let mut lists: HashMap<String, (i64, JoinHandle<()>)> = HashMap::new();
+    let mut lists = Lists::new();
     let mut listed = HashSet::new();
     let config = watcher::Config::default().timeout(timeouts.watch_secs);
     let mut events = std::pin::pin!(kube::runtime::WatchStreamExt::default_backoff(watcher(
@@ -167,7 +179,7 @@ pub async fn run(
             }
             Ok(watcher::Event::InitDone) => {
                 for name in gone(lists.keys(), &listed) {
-                    stop(&mut lists, &metrics, &name);
+                    stop(&mut lists, &metrics, &name).await;
                 }
             }
             Ok(watcher::Event::Delete(egress)) => {
@@ -175,7 +187,8 @@ pub async fn run(
                     &mut lists,
                     &metrics,
                     &egress.metadata.name.unwrap_or_default(),
-                );
+                )
+                .await;
             }
             Err(e) => tracing::warn!(error = %e, "watch of the Egress resources failed, retrying"),
         }
@@ -191,21 +204,22 @@ async fn changed(
     resolver: &Arc<Resolver>,
     metrics: &Arc<Metrics>,
     node: &str,
-    lists: &mut HashMap<String, (i64, JoinHandle<()>)>,
+    lists: &mut Lists,
     egress: Egress,
 ) {
     let name = egress.metadata.name.clone().unwrap_or_default();
     let generation = egress.metadata.generation.unwrap_or_default();
+    let version = (egress.metadata.uid.clone().unwrap_or_default(), generation);
     let (names_node, has_entry) = on_node(&egress, node);
     match action(
-        lists.get(&name).map(|(running, _)| *running),
-        generation,
+        lists.get(&name).map(|(running, _)| running),
+        &version,
         names_node,
         has_entry,
     ) {
         Action::Keep | Action::Ignore => {}
         Action::Start => {
-            stop(lists, metrics, &name);
+            stop(lists, metrics, &name).await;
             tracing::info!(egress = name, generation, "resolving");
             let task = tokio::spawn(keep_resolved(
                 api.clone(),
@@ -216,10 +230,10 @@ async fn changed(
                 generation,
                 egress.spec,
             ));
-            lists.insert(name, (generation, task));
+            lists.insert(name, (version, task));
         }
         Action::Leave => {
-            stop(lists, metrics, &name);
+            stop(lists, metrics, &name).await;
             tracing::info!(egress = name, "no longer names this node");
             let unowned = json!({"apiVersion": "slipmesh.net/v1alpha1", "kind": "Egress"});
             if let Err(e) = api
@@ -250,9 +264,12 @@ fn gone<'a>(running: impl Iterator<Item = &'a String>, listed: &HashSet<String>)
         .collect()
 }
 
-fn stop(lists: &mut HashMap<String, (i64, JoinHandle<()>)>, metrics: &Metrics, name: &str) {
+/// Ends the list's task, then drops its series: an aborted task stops only at its next await,
+/// and could write a series again in between.
+async fn stop(lists: &mut Lists, metrics: &Metrics, name: &str) {
     if let Some((_, task)) = lists.remove(name) {
         task.abort();
+        let _ = task.await;
         metrics.forget(name);
     }
 }
@@ -278,7 +295,7 @@ async fn keep_resolved(
     loop {
         let now = SystemTime::now();
         let outcome = round(&resolver, &asked, &mut answers, now).await;
-        let wait = match &outcome {
+        let mut wait = match &outcome {
             Ok(networks) => {
                 let counts = counts(networks);
                 metrics.resolved(&name, counts, now);
@@ -298,6 +315,7 @@ async fn keep_resolved(
             .await
         {
             tracing::warn!(egress = name, error = %e, "failed to apply the status");
+            wait = wait.min(AFTER_FAILURE);
         }
         tokio::time::sleep(wait).await;
     }
@@ -431,12 +449,28 @@ mod tests {
 
     #[test]
     fn a_change_starts_a_list_anew_keeps_the_running_one_and_leaves_one_that_drops_this_node() {
-        assert_eq!(action(None, 1, true, false), Action::Start);
-        assert_eq!(action(Some(1), 2, true, true), Action::Start);
-        assert_eq!(action(Some(2), 2, true, true), Action::Keep);
-        assert_eq!(action(Some(2), 3, false, true), Action::Leave);
-        assert_eq!(action(None, 3, false, true), Action::Leave);
-        assert_eq!(action(None, 3, false, false), Action::Ignore);
+        let version = |uid: &str, generation| (uid.to_owned(), generation);
+        let running = version("a", 2);
+        assert_eq!(action(None, &version("a", 1), true, false), Action::Start);
+        assert_eq!(
+            action(Some(&version("a", 1)), &running, true, true),
+            Action::Start
+        );
+        assert_eq!(
+            action(Some(&running), &version("a", 2), true, true),
+            Action::Keep
+        );
+        // Made again under the same name, at the same generation.
+        assert_eq!(
+            action(Some(&running), &version("b", 2), true, true),
+            Action::Start
+        );
+        assert_eq!(
+            action(Some(&running), &version("a", 3), false, true),
+            Action::Leave
+        );
+        assert_eq!(action(None, &running, false, true), Action::Leave);
+        assert_eq!(action(None, &running, false, false), Action::Ignore);
     }
 
     #[test]
