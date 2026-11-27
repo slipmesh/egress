@@ -139,41 +139,6 @@ spec:
                 format: uint32
                 minimum: 0.0
                 type: integer
-              via:
-                description: Absent, each family leaves through its default route's gateway.
-                properties:
-                  ipv4:
-                    description: A gateway of its family, a link, or both.
-                    properties:
-                      gateway:
-                        maxLength: 45
-                        type: string
-                      interface:
-                        maxLength: 15
-                        type: string
-                    type: object
-                    x-kubernetes-validations:
-                    - rule: has(self.gateway) || has(self.interface)
-                    - rule: '!has(self.interface) || self.interface.matches(''^[!-.0-9;-~]{1,15}$'')'
-                    - rule: '!has(self.interface) || (self.interface != ''.'' && self.interface != ''..'')'
-                  ipv6:
-                    description: A gateway of its family, a link, or both.
-                    properties:
-                      gateway:
-                        maxLength: 45
-                        type: string
-                      interface:
-                        maxLength: 15
-                        type: string
-                    type: object
-                    x-kubernetes-validations:
-                    - rule: has(self.gateway) || has(self.interface)
-                    - rule: '!has(self.interface) || self.interface.matches(''^[!-.0-9;-~]{1,15}$'')'
-                    - rule: '!has(self.interface) || (self.interface != ''.'' && self.interface != ''..'')'
-                type: object
-                x-kubernetes-validations:
-                - rule: '!has(self.ipv4) || !has(self.ipv4.gateway) || (isIP(self.ipv4.gateway) && ip(self.ipv4.gateway).family() == 4)'
-                - rule: '!has(self.ipv6) || !has(self.ipv6.gateway) || (isIP(self.ipv6.gateway) && ip(self.ipv6.gateway).family() == 6)'
             required:
             - include
             - nodes
