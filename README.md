@@ -125,7 +125,8 @@ carries, rendered through [`about.hbs`](about.hbs). Code style:
    since the last tag. It opens `chore: release vX.Y.Z`, which bumps `Cargo.toml` and
    `Cargo.lock` and regenerates `CHANGELOG.md`.
 2. Merging that pull request builds `ghcr.io/slipmesh/egress:sha-<commit>`, tags it `vX.Y.Z`, tags
-   the commit and creates a GitHub Release with no assets.
+   the commit and creates a GitHub Release with both CRDs and the DaemonSet, its image pinned to
+   `vX.Y.Z`, attached.
 
 Every other push and pull request only checks; a pull request also builds the image and pushes
 nothing.
