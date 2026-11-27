@@ -32,15 +32,22 @@ to a throwaway cluster, since no local evaluator sizes them.
 
 Each source is asked as one query per AS number, country or host name, or one for its literal
 prefixes; both families are kept. AS numbers and countries go to
-[RIPEstat](https://stat.ripe.net/docs/data-api/) (announced prefixes, country resources), host
-names to the system's resolver. A source's own `ttl` is how long each of its answers holds;
-without one, a RIPEstat or literal answer holds for `spec.ttl`, and a host's for its records'
-shortest TTL, at least 60 s and at most `spec.ttl`. The answers merge within
-their label, and every network of `exclude` and every mesh endpoint is cut out of them. One query
-that fails, or a list with nothing left, fails the whole resolve, and the last good list stays.
+[RIPEstat](https://stat.ripe.net/docs/data-api/) (announced prefixes, country resources with IPv4
+written as prefixes), host names to the system's resolver, A and AAAA each asked on its own. A
+source's own `ttl` is how long each of its answers holds; without one, a RIPEstat or literal answer
+holds for `spec.ttl`, and a host's for its records' shortest TTL, at most `spec.ttl` and at least
+60 s, even where `spec.ttl` is shorter. The answers merge within their label, an empty label being
+none, and every network of `exclude` and every mesh endpoint is cut out of them.
+
+A list's queries run at once. One that fails fails the whole resolve: a RIPEstat error, an answer
+of the wrong shape or over 64 MiB, or either family of a host failing to look up, though a family
+without records is only empty. So do a host with no address, a list with nothing left, and a
+resolve that outlasts its budget of 90 s per round of five RIPEstat requests plus 15 s for the
+hosts.
 
 The router daemon of the Talos extensions keeps its own IPv4-only copy of this resolver for format
-version 1 until that daemon stops resolving lists; neither copy follows the other.
+version 1 until that daemon stops resolving lists; a defect found in one copy is checked against
+the other.
 
 ## Moving the lists of a version 1 file
 

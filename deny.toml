@@ -28,6 +28,9 @@ multiple-versions = "warn"
 wildcards = "deny"
 # A path dependency inside the workspace carries no version and is not a wildcard.
 allow-wildcard-paths = true
+# rustls's provider is ring alone: a second one would leave reqwest's choice to whichever
+# installs first.
+deny = [{ crate = "aws-lc-rs" }, { crate = "aws-lc-sys" }]
 
 [sources]
 unknown-registry = "deny"
