@@ -1,10 +1,11 @@
 //! The egress agent.
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use egress::agent::{self, Metrics};
 use egress::crd;
 use kube::CustomResourceExt;
+use sliplib_config::mesh_object::Mesh;
 use sliplib_kube::ApiTimeouts;
 use sliplib_runtime::metrics::{Page, Rendering};
 use std::net::SocketAddr;
@@ -30,8 +31,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Print the CRD of `Egress`, as `deploy/` holds it.
-    Crd,
+    /// Print the CRD of `kind`, as `deploy/` holds it.
+    Crd { kind: Kind },
     /// Resolve every `Egress` that names this node, the node named by `NODE_NAME`.
     Run {
         /// Where `/metrics` is served.
@@ -40,9 +41,21 @@ enum Command {
     },
 }
 
+#[derive(Clone, Copy, ValueEnum)]
+enum Kind {
+    Egress,
+    Mesh,
+}
+
 fn main() -> Result<()> {
     match Cli::parse().command {
-        Command::Crd => print!("{}", sliplib_yaml::to_string(&crd::Egress::crd())?),
+        Command::Crd { kind } => {
+            let crd = match kind {
+                Kind::Egress => crd::Egress::crd(),
+                Kind::Mesh => Mesh::crd(),
+            };
+            print!("{}", sliplib_yaml::to_string(&crd)?);
+        }
         Command::Run { metrics } => run(metrics)?,
     }
     Ok(())

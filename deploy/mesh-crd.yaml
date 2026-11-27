@@ -1,0 +1,46 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: meshes.slipmesh.net
+spec:
+  group: slipmesh.net
+  names:
+    kind: Mesh
+    plural: meshes
+    singular: mesh
+  scope: Cluster
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for MeshSpec via `CustomResource`
+        properties:
+          spec:
+            description: 'Read strictly: a new field reaches the agents before the CRD and the manifest carry it.'
+            properties:
+              nodes:
+                additionalProperties:
+                  properties:
+                    endpoint:
+                      description: As the files write it; none behind NAT.
+                      nullable: true
+                      properties:
+                        ipv4:
+                          type: string
+                        ipv6:
+                          type: string
+                      type: object
+                      x-kubernetes-validations:
+                      - rule: has(self.ipv4) != has(self.ipv6)
+                  type: object
+                description: Every node of the network, by its name there.
+                type: object
+            required:
+            - nodes
+            type: object
+        required:
+        - spec
+        title: Mesh
+        type: object
+    served: true
+    storage: true

@@ -2700,7 +2700,11 @@ version = "0.28.1"
 source = "git+https://github.com/slipmesh/sliplib?tag=v0.28.1#235bc25c6f00c11c8eaf8546baa75bf1581aa43a"
 dependencies = [
  "indexmap",
+ "k8s-openapi",
+ "kube",
+ "schemars",
  "serde",
+ "serde_json",
  "sliplib-net",
  "sliplib-secrets",
  "sliplib-yaml",

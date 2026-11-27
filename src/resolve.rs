@@ -9,8 +9,9 @@ use hickory_resolver::net::NetError;
 use hickory_resolver::proto::rr::{RData, RecordType};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sliplib_config::mesh_object::MeshSpec;
 use sliplib_net::IpNet;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::net::IpAddr;
 use std::time::{Duration, Instant, SystemTime};
@@ -97,6 +98,39 @@ pub fn compose(asked: &[Asked], answers: &[&Answer], excluded: &[IpNet]) -> Resu
         }
     }
     list(&include, &exclude, excluded)
+}
+
+/// The mesh's endpoints as the agent last read the `Mesh` called `mesh`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Endpoints {
+    Unread,
+    Absent,
+    Hosts(BTreeSet<String>),
+}
+
+impl Endpoints {
+    /// Every node's endpoint as written, each once; none of a node behind NAT.
+    pub fn of(mesh: Option<&MeshSpec>) -> Self {
+        mesh.map_or(Self::Absent, |mesh| {
+            Self::Hosts(
+                mesh.nodes
+                    .values()
+                    .filter_map(|node| node.endpoint.as_ref())
+                    .map(|endpoint| endpoint.host().to_owned())
+                    .collect(),
+            )
+        })
+    }
+
+    /// One host query per endpoint.
+    pub fn queries(&self) -> Result<Vec<Query>> {
+        match self {
+            Self::Hosts(hosts) => Ok(hosts.iter().cloned().map(Query::Host).collect()),
+            Self::Unread | Self::Absent => {
+                bail!("the Mesh `mesh` is not there: apply what `slipmesh manifest` writes")
+            }
+        }
+    }
 }
 
 /// RIPEstat's documented limit is 8 concurrent requests per address; this stays under it.
@@ -709,5 +743,26 @@ mod tests {
             .unwrap(),
             nets(&["192.0.2.128/25", "203.0.113.128/25"])
         );
+    }
+
+    #[test]
+    fn each_endpoint_is_asked_once_a_node_behind_nat_for_none_and_no_mesh_is_an_error() {
+        let mesh: MeshSpec = sliplib_yaml::from_str(
+            "nodes:
+               node-a: {endpoint: {ipv4: 192.0.2.1}}
+               node-b: {endpoint: {ipv6: node-b.example.com}}
+               node-c: {}
+               node-d: {endpoint: {ipv4: 192.0.2.1}}",
+        )
+        .unwrap();
+        assert_eq!(
+            Endpoints::of(Some(&mesh)).queries().unwrap(),
+            [
+                Query::Host("192.0.2.1".into()),
+                Query::Host("node-b.example.com".into())
+            ]
+        );
+        assert_eq!(Endpoints::of(None), Endpoints::Absent);
+        assert!(Endpoints::Absent.queries().is_err());
     }
 }
