@@ -166,12 +166,7 @@ pub async fn run(
                 changed(&api, &resolver, &metrics, &node, &mut lists, egress).await;
             }
             Ok(watcher::Event::InitDone) => {
-                let gone: Vec<String> = lists
-                    .keys()
-                    .filter(|name| !listed.contains(*name))
-                    .cloned()
-                    .collect();
-                for name in gone {
+                for name in gone(lists.keys(), &listed) {
                     stop(&mut lists, &metrics, &name);
                 }
             }
@@ -201,11 +196,7 @@ async fn changed(
 ) {
     let name = egress.metadata.name.clone().unwrap_or_default();
     let generation = egress.metadata.generation.unwrap_or_default();
-    let names_node = egress.spec.nodes.iter().any(|named| named == node);
-    let has_entry = egress
-        .status
-        .as_ref()
-        .is_some_and(|status| status.nodes.iter().any(|entry| entry.node == node));
+    let (names_node, has_entry) = on_node(&egress, node);
     match action(
         lists.get(&name).map(|(running, _)| *running),
         generation,
@@ -239,6 +230,24 @@ async fn changed(
             }
         }
     }
+}
+
+/// Whether `egress` names `node`, and whether its status has an entry of `node`'s.
+fn on_node(egress: &Egress, node: &str) -> (bool, bool) {
+    let names_node = egress.spec.nodes.iter().any(|named| named == node);
+    let has_entry = egress
+        .status
+        .as_ref()
+        .is_some_and(|status| status.nodes.iter().any(|entry| entry.node == node));
+    (names_node, has_entry)
+}
+
+/// The lists `running` that a relist, `listed`, no longer holds.
+fn gone<'a>(running: impl Iterator<Item = &'a String>, listed: &HashSet<String>) -> Vec<String> {
+    running
+        .filter(|name| !listed.contains(*name))
+        .cloned()
+        .collect()
 }
 
 fn stop(lists: &mut HashMap<String, (i64, JoinHandle<()>)>, metrics: &Metrics, name: &str) {
@@ -470,10 +479,52 @@ mod tests {
 
     #[test]
     fn a_list_is_counted_by_family() {
-        let networks: Vec<IpNet> = ["192.0.2.0/24", "198.51.100.0/24", "2001:db8::/32"]
+        let networks: Vec<IpNet> = ["192.0.2.0/24", "2001:db8::/32", "3fff::/20"]
             .iter()
             .map(|n| n.parse().unwrap())
             .collect();
-        assert_eq!(counts(&networks), (2, 1));
+        assert_eq!(counts(&networks), (1, 2));
+    }
+
+    #[test]
+    fn a_node_reads_whether_a_list_names_it_and_whether_its_entry_is_there() {
+        let egress: Egress = sliplib_yaml::from_str(
+            "{apiVersion: slipmesh.net/v1alpha1, kind: Egress, metadata: {name: a},
+              spec: {nodes: [node-a], include: [{country: XX}]},
+              status: {nodes: [{node: node-b, observedGeneration: 1, prefixes: {ipv4: 0, ipv6: 0}}]}}",
+        )
+        .unwrap();
+        assert_eq!(on_node(&egress, "node-a"), (true, false));
+        assert_eq!(on_node(&egress, "node-b"), (false, true));
+        let listed = HashSet::from(["a".to_owned()]);
+        let running = ["a".to_owned(), "b".to_owned()];
+        assert_eq!(gone(running.iter(), &listed), ["b"]);
+    }
+
+    #[test]
+    fn each_node_applies_as_its_own_manager_and_its_series_go_with_its_list() {
+        let params = field_manager("node-a");
+        assert_eq!(params.field_manager.as_deref(), Some("egress/node-a"));
+        assert!(params.force);
+
+        let metrics = Metrics::default();
+        metrics.resolved("a", (2, 1), at(60));
+        metrics.failed("a");
+        let encoded = || {
+            let mut out = String::new();
+            prometheus_client::encoding::text::encode(&mut out, &metrics.registry).unwrap();
+            out
+        };
+        let text = encoded();
+        for series in [
+            r#"slipmesh_egress_prefixes{egress="a",family="ipv4"} 2"#,
+            r#"slipmesh_egress_prefixes{egress="a",family="ipv6"} 1"#,
+            r#"slipmesh_egress_last_resolve_timestamp_seconds{egress="a"} 60"#,
+            r#"slipmesh_egress_resolve_errors_total{egress="a"} 1"#,
+        ] {
+            assert!(text.contains(series), "{series} in {text}");
+        }
+        metrics.forget("a");
+        assert!(!encoded().contains(r#"egress="a""#), "{}", encoded());
     }
 }
