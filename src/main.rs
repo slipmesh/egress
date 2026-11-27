@@ -1,9 +1,8 @@
 //! The egress agent.
 
-mod crd;
-
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use egress::crd;
 use kube::CustomResourceExt;
 
 #[derive(Parser)]
