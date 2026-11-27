@@ -1,12 +1,4 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["github>slipmesh/.github"],
-  "packageRules": [
-    {
-      "description": "egress-export reads format version 1, which sliplib v0.19.0 is the last to read.",
-      "matchManagers": ["cargo"],
-      "matchDepNames": ["sliplib-config-v1", "sliplib-net-v1"],
-      "enabled": false
-    }
-  ]
+  "extends": ["github>slipmesh/.github"]
 }

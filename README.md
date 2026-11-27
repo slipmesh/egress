@@ -74,20 +74,6 @@ InternalIP, `status.hostIP`, and port 9478. The series are `slipmesh_egress_pref
 `slipmesh_egress_last_resolve_timestamp_seconds{egress}` and
 `slipmesh_egress_resolve_errors_total{egress}`.
 
-## Moving the lists of a version 1 file
-
-`egress-export <file>` prints one `Egress` per node with a `bypass` list in a `slipmesh.yaml` of
-format version 1, named for it, its lists merged in file order as version 1 merges them, and
-writes nothing. It writes a node's mesh name as its `Node` name, which holds while the two are
-the same. It reads the file through sliplib v0.19.0, the last release that reads that version. A
-literal source's prefixes become one source per label, each written as it was read; a geoip source
-without a label gets the label the daemon gives it; the refresh interval is written out as `ttl`,
-the daemon's default where the file has none. Routes stay off.
-
-```bash
-cargo run --bin egress-export -- slipmesh.yaml > egress.yaml
-```
-
 ## Development
 
 ```bash
