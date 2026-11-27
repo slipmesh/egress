@@ -604,12 +604,12 @@ mod tests {
 
     #[test]
     fn a_source_asks_one_query_per_asn_host_or_country_and_one_for_its_prefixes() {
-        let source: Source = yaml_serde::from_str("{asns: [AS64496, AS64497]}").unwrap();
+        let source: Source = sliplib_yaml::from_str("{asns: [AS64496, AS64497]}").unwrap();
         assert_eq!(
             queries(&source),
             [Query::Asn("AS64496".into()), Query::Asn("AS64497".into())]
         );
-        let source: Source = yaml_serde::from_str("{hostnames: [a.example, b.example]}").unwrap();
+        let source: Source = sliplib_yaml::from_str("{hostnames: [a.example, b.example]}").unwrap();
         assert_eq!(
             queries(&source),
             [
@@ -617,9 +617,10 @@ mod tests {
                 Query::Host("b.example".into())
             ]
         );
-        let source: Source = yaml_serde::from_str("{country: XX}").unwrap();
+        let source: Source = sliplib_yaml::from_str("{country: XX}").unwrap();
         assert_eq!(queries(&source), [Query::Country("XX".into())]);
-        let source: Source = yaml_serde::from_str("{prefixes: [192.0.2.0/24, 3fff::/20]}").unwrap();
+        let source: Source =
+            sliplib_yaml::from_str("{prefixes: [192.0.2.0/24, 3fff::/20]}").unwrap();
         assert_eq!(
             queries(&source),
             [Query::Prefixes(vec![
@@ -962,7 +963,7 @@ mod tests {
     }
 
     fn spec(yaml: &str) -> EgressSpec {
-        yaml_serde::from_str(yaml).unwrap()
+        sliplib_yaml::from_str(yaml).unwrap()
     }
 
     #[tokio::test]

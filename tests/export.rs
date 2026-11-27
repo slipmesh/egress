@@ -24,7 +24,8 @@ fn the_egress_of_the_file_is_printed_and_the_file_left_as_it_was() {
         .unwrap();
     assert!(output.status.success(), "{output:?}");
     assert_eq!(std::fs::read_to_string(&path).unwrap(), V1);
-    let printed: serde_json::Value = yaml_serde::from_slice(&output.stdout).unwrap();
+    let printed: serde_json::Value =
+        sliplib_yaml::from_str(std::str::from_utf8(&output.stdout).unwrap()).unwrap();
     assert_eq!(printed["kind"], "Egress");
     assert_eq!(printed["metadata"]["name"], "node-a");
 }

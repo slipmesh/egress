@@ -60,7 +60,7 @@ fn manifests(raw: &str) -> Result<String> {
             include: sources(&include).with_context(|| format!("bypass of {node}"))?,
             exclude: sources(&exclude).with_context(|| format!("bypass of {node}"))?,
         };
-        documents.push(yaml_serde::to_string(&Egress::new(node, spec))?);
+        documents.push(sliplib_yaml::to_string(&Egress::new(node, spec))?);
     }
     Ok(documents.join("---\n"))
 }
@@ -173,7 +173,7 @@ bypass:
 
     fn yaml(text: &str) -> Vec<serde_json::Value> {
         text.split("\n---\n")
-            .map(|document| yaml_serde::from_str(document).unwrap())
+            .map(|document| sliplib_yaml::from_str(document).unwrap())
             .collect()
     }
 
