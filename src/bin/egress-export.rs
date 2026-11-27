@@ -56,7 +56,6 @@ fn manifests(raw: &str) -> Result<String> {
             nodes: vec![node.to_owned()],
             ttl,
             install: false,
-            via: None,
             include: sources(&include).with_context(|| format!("bypass of {node}"))?,
             exclude: sources(&exclude).with_context(|| format!("bypass of {node}"))?,
         };
