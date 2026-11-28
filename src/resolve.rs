@@ -2,7 +2,7 @@
 //! list, each answer with its own resolve time and lifetime, and the answers merged within their
 //! label, less every exclusion.
 
-use crate::crd::{EgressSpec, Source};
+use crate::crd::{EgressSpec, Place, Source};
 use anyhow::{Context, Result, bail, ensure};
 use hickory_resolver::lookup::Lookup;
 use hickory_resolver::net::NetError;
@@ -55,11 +55,12 @@ pub enum Lifetime {
     List(Duration),
 }
 
-/// One query of a list: whether it includes or excludes, its source's label, and how long its
+/// One query of a list: its source's place and index there, its source's label, and how long its
 /// answer holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Asked {
-    pub include: bool,
+    pub place: Place,
+    pub index: u32,
     pub label: Option<String>,
     pub query: Query,
     pub lifetime: Lifetime,
@@ -68,22 +69,26 @@ pub struct Asked {
 /// Every query of `spec`, its includes first, in the order written.
 pub fn asked(spec: &EgressSpec) -> Vec<Asked> {
     let list = Duration::from_secs(spec.ttl.into());
-    [(true, &spec.include), (false, &spec.exclude)]
-        .into_iter()
-        .flat_map(|(include, sources)| {
-            sources.iter().flat_map(move |source| {
-                let lifetime = source.ttl.map_or(Lifetime::List(list), |ttl| {
-                    Lifetime::Source(Duration::from_secs(ttl.into()))
-                });
-                queries(source).into_iter().map(move |query| Asked {
-                    include,
-                    label: source.label.clone(),
-                    query,
-                    lifetime,
-                })
+    [
+        (Place::Include, &spec.include),
+        (Place::Exclude, &spec.exclude),
+    ]
+    .into_iter()
+    .flat_map(|(place, sources)| {
+        (0u32..).zip(sources).flat_map(move |(index, source)| {
+            let lifetime = source.ttl.map_or(Lifetime::List(list), |ttl| {
+                Lifetime::Source(Duration::from_secs(ttl.into()))
+            });
+            queries(source).into_iter().map(move |query| Asked {
+                place,
+                index,
+                label: source.label.clone(),
+                query,
+                lifetime,
             })
         })
-        .collect()
+    })
+    .collect()
 }
 
 /// The list `answers`, one for each of `asked`, make, less `excluded`.
@@ -91,7 +96,7 @@ pub fn compose(asked: &[Asked], answers: &[&Answer], excluded: &[IpNet]) -> Resu
     let mut include = Vec::new();
     let mut exclude = Vec::new();
     for (asked, answer) in asked.iter().zip(answers) {
-        if asked.include {
+        if asked.place == Place::Include {
             include.push((asked.label.clone(), answer.networks.clone()));
         } else {
             exclude.extend(&answer.networks);
@@ -712,14 +717,17 @@ mod tests {
         let asked = asked(&spec);
         let shape: Vec<_> = asked
             .iter()
-            .map(|asked| (asked.include, asked.label.as_deref(), asked.lifetime))
+            .map(|asked| {
+                let at = (asked.place, asked.index);
+                (at, asked.label.as_deref(), asked.lifetime)
+            })
             .collect();
         assert_eq!(
             shape,
             [
-                (true, Some("a"), Lifetime::List(secs(3600))),
-                (true, None, Lifetime::Source(secs(60))),
-                (false, None, Lifetime::List(secs(3600))),
+                ((Place::Include, 0), Some("a"), Lifetime::List(secs(3600))),
+                ((Place::Include, 1), None, Lifetime::Source(secs(60))),
+                ((Place::Exclude, 0), None, Lifetime::List(secs(3600))),
             ]
         );
         let answer = |net: &str| Answer {

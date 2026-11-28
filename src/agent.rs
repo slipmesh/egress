@@ -1,7 +1,7 @@
 //! On one node, every `Egress` that names it resolved on its own schedule, with its status and
 //! metrics kept, and its routes installed if it says so.
 
-use crate::crd::Egress;
+use crate::crd::{Egress, FamilyCounts, SourceStatus};
 use crate::install::{self, Installer};
 use crate::resolve::{self, Answer, Asked, Endpoints, Lifetime, Resolver};
 use anyhow::{Context, Result};
@@ -21,7 +21,7 @@ use sliplib_config::mesh_object::{self, Mesh};
 use sliplib_kube::{Agent, ApiTimeouts};
 use sliplib_net::IpNet;
 use sliplib_runtime::Shutdown;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::watch;
@@ -406,11 +406,20 @@ async fn keep_resolved(shared: Shared, egress: Egress) {
     let spec = egress.spec;
     let asked = resolve::asked(&spec);
     let mut answers: Vec<Option<Answer>> = vec![None; asked.len()];
+    let mut errors: Vec<Option<String>> = vec![None; asked.len()];
     let mut last = Last::default();
     loop {
         let now = SystemTime::now();
         let endpoints = mesh.borrow_and_update().clone();
-        let outcome = round(&resolver, &asked, &mut answers, &endpoints, now).await;
+        let outcome = round(
+            &resolver,
+            &asked,
+            &mut answers,
+            &mut errors,
+            &endpoints,
+            now,
+        )
+        .await;
         let mut wait = match &outcome {
             Ok(networks) => {
                 let counts = counts(networks);
@@ -428,7 +437,12 @@ async fn keep_resolved(shared: Shared, egress: Egress) {
                 AFTER_FAILURE
             }
         };
-        let status = status(&node, generation, &last);
+        let status = status(
+            &node,
+            generation,
+            &last,
+            &sources(&asked, &answers, &errors),
+        );
         if let Err(e) = api
             .patch_status(&name, &field_manager(&node), &Patch::Apply(&status))
             .await
@@ -444,11 +458,12 @@ async fn keep_resolved(shared: Shared, egress: Egress) {
 }
 
 /// Answers every query `due` at `now` and every endpoint, then composes the list less the
-/// endpoints.
+/// endpoints. Every query runs to the end, so one that fails keeps the others' answers.
 async fn round(
     resolver: &Resolver,
     asked: &[Asked],
     answers: &mut [Option<Answer>],
+    errors: &mut [Option<String>],
     endpoints: &Endpoints,
     now: SystemTime,
 ) -> Result<Vec<IpNet>> {
@@ -456,7 +471,7 @@ async fn round(
     let due = due(answers, now);
     // Both run to the end, so a failed endpoint keeps the fresh answers.
     let (fresh, cuts) = futures::join!(
-        futures::future::try_join_all(
+        futures::future::join_all(
             due.iter()
                 .map(|&i| resolver.answer(&asked[i].query, asked[i].lifetime)),
         ),
@@ -468,12 +483,77 @@ async fn round(
                 .with_context(|| format!("endpoint {query:?}"))
         })),
     );
-    for (i, answer) in due.into_iter().zip(fresh?) {
-        answers[i] = Some(answer);
-    }
+    store(answers, errors, &due, fresh)?;
     let answered: Vec<&Answer> = answers.iter().flatten().collect();
     let excluded: Vec<IpNet> = cuts?.into_iter().flat_map(|cut| cut.networks).collect();
     resolve::compose(asked, &answered, &excluded)
+}
+
+/// Each of `due`'s `results` kept in its slot: a good answer replaces the last and clears its
+/// error, a failure keeps the last good answer beside it. Gives the first failure.
+fn store(
+    answers: &mut [Option<Answer>],
+    errors: &mut [Option<String>],
+    due: &[usize],
+    results: Vec<Result<Answer>>,
+) -> Result<()> {
+    let mut first = None;
+    for (&i, result) in due.iter().zip(results) {
+        match result {
+            Ok(answer) => {
+                answers[i] = Some(answer);
+                errors[i] = None;
+            }
+            Err(e) => {
+                errors[i] = Some(format!("{e:#}"));
+                first.get_or_insert(e);
+            }
+        }
+    }
+    first.map_or(Ok(()), Err)
+}
+
+/// Each source of `asked`, in spec order, from its queries' `answers` and `errors`.
+fn sources(
+    asked: &[Asked],
+    answers: &[Option<Answer>],
+    errors: &[Option<String>],
+) -> Vec<SourceStatus> {
+    let mut start = 0;
+    asked
+        .chunk_by(|a, b| (a.place, a.index) == (b.place, b.index))
+        .map(|source| {
+            let range = start..start + source.len();
+            start = range.end;
+            let answers = &answers[range.clone()];
+            let oldest = answers
+                .iter()
+                .map(Option::as_ref)
+                .collect::<Option<Vec<_>>>()
+                .and_then(|given| {
+                    given
+                        .into_iter()
+                        .min_by_key(|answer| (answer.resolved_at, answer.ttl))
+                });
+            let networks: Vec<IpNet> = answers
+                .iter()
+                .flatten()
+                .flat_map(|answer| answer.networks.iter().copied())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            let (ipv4, ipv6) = counts(&networks);
+            SourceStatus {
+                place: source[0].place,
+                index: source[0].index,
+                label: source[0].label.clone(),
+                resolved_at: oldest.map(|answer| time(answer.resolved_at)),
+                ttl: oldest.map(|answer| u32::try_from(answer.ttl.as_secs()).unwrap_or(u32::MAX)),
+                prefixes: FamilyCounts { ipv4, ipv6 },
+                error: errors[range].iter().flatten().next().cloned(),
+            }
+        })
+        .collect()
 }
 
 /// The answers never given or past their lifetime at `now`.
@@ -538,15 +618,18 @@ impl Last {
     }
 }
 
+fn time(at: SystemTime) -> Time {
+    Time(k8s_openapi::jiff::Timestamp::try_from(at).unwrap_or_default())
+}
+
 /// This node's entry of the status, as it is applied.
-fn status(node: &str, generation: i64, last: &Last) -> Value {
-    let time =
-        |at: SystemTime| Time(k8s_openapi::jiff::Timestamp::try_from(at).unwrap_or_default());
+fn status(node: &str, generation: i64, last: &Last, sources: &[SourceStatus]) -> Value {
     let ok = last.ok == Some(true);
     let mut entry = json!({
         "node": node,
         "observedGeneration": generation,
         "prefixes": {"ipv4": last.counts.0, "ipv6": last.counts.1},
+        "sources": sources,
         "conditions": [{
             "type": "Resolved",
             "status": if ok { "True" } else { "False" },
@@ -628,12 +711,13 @@ mod tests {
         last.failed(at(30), "gave up".into());
         last.failed(at(40), "gave up again".into());
         assert_eq!(
-            status("node-a", 4, &last)["status"]["nodes"][0],
+            status("node-a", 4, &last, &[])["status"]["nodes"][0],
             json!({
                 "node": "node-a",
                 "observedGeneration": 4,
                 "resolvedAt": "1970-01-01T00:00:20Z",
                 "prefixes": {"ipv4": 3, "ipv6": 1},
+                "sources": [],
                 "conditions": [{
                     "type": "Resolved",
                     "status": "False",
@@ -643,6 +727,93 @@ mod tests {
                     "lastTransitionTime": "1970-01-01T00:00:30Z",
                 }],
             })
+        );
+    }
+
+    fn answered(secs: u64, networks: &[&str]) -> Option<Answer> {
+        held(secs, 86_400, networks)
+    }
+
+    fn held(secs: u64, ttl: u64, networks: &[&str]) -> Option<Answer> {
+        Some(Answer {
+            networks: networks.iter().map(|n| n.parse().unwrap()).collect(),
+            resolved_at: at(secs),
+            ttl: Duration::from_secs(ttl),
+        })
+    }
+
+    #[test]
+    fn a_failure_keeps_the_last_good_answer_beside_its_error_until_the_query_answers() {
+        let mut answers = vec![answered(10, &["192.0.2.0/24"]), None, None];
+        let mut errors = vec![None, Some("gave up before".to_owned()), None];
+        let ended = store(
+            &mut answers,
+            &mut errors,
+            &[0, 1, 2],
+            vec![
+                Err(anyhow::anyhow!("gave up")),
+                Ok(answered(20, &["198.51.100.0/24"]).unwrap()),
+                Err(anyhow::anyhow!("gave up too")),
+            ],
+        );
+        assert_eq!(format!("{:#}", ended.unwrap_err()), "gave up");
+        assert_eq!(
+            answers,
+            [
+                answered(10, &["192.0.2.0/24"]),
+                answered(20, &["198.51.100.0/24"]),
+                None
+            ]
+        );
+        assert_eq!(
+            errors,
+            [Some("gave up".into()), None, Some("gave up too".into())]
+        );
+        assert!(store(&mut answers, &mut errors, &[], Vec::new()).is_ok());
+    }
+
+    #[test]
+    fn each_source_counts_its_distinct_networks_from_its_oldest_answer_with_its_first_error() {
+        let spec = sliplib_yaml::from_str(
+            "{nodes: [node-a], include: [
+                {label: a, asns: [AS64496, AS64497]},
+                {hostnames: [a.example.com, b.example.com]},
+                {hostnames: [c.example.com, d.example.com]}
+            ], exclude: [{prefixes: [192.0.2.0/25]}]}",
+        )
+        .unwrap();
+        let asked = resolve::asked(&spec);
+        let answers = [
+            answered(100, &["192.0.2.0/24", "2001:db8::/32"]),
+            answered(50, &["192.0.2.0/24", "198.51.100.0/24"]),
+            held(100, 300, &["203.0.113.1/32"]),
+            None,
+            held(70, 600, &["203.0.113.3/32"]),
+            held(90, 120, &["203.0.113.4/32"]),
+            answered(100, &["192.0.2.0/25"]),
+        ];
+        let errors = [
+            None,
+            Some("AS64497 gave up".to_owned()),
+            None,
+            Some("b.example.com gave up".to_owned()),
+            None,
+            None,
+            None,
+        ];
+        assert_eq!(
+            serde_json::to_value(sources(&asked, &answers, &errors)).unwrap(),
+            json!([
+                {"place": "include", "index": 0, "label": "a",
+                 "resolvedAt": "1970-01-01T00:00:50Z", "ttl": 86_400,
+                 "prefixes": {"ipv4": 2, "ipv6": 1}, "error": "AS64497 gave up"},
+                {"place": "include", "index": 1, "prefixes": {"ipv4": 1, "ipv6": 0},
+                 "error": "b.example.com gave up"},
+                {"place": "include", "index": 2, "resolvedAt": "1970-01-01T00:01:10Z", "ttl": 600,
+                 "prefixes": {"ipv4": 2, "ipv6": 0}},
+                {"place": "exclude", "index": 0, "resolvedAt": "1970-01-01T00:01:40Z",
+                 "ttl": 86_400, "prefixes": {"ipv4": 1, "ipv6": 0}},
+            ])
         );
     }
 
