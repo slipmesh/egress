@@ -526,15 +526,11 @@ fn sources(
             let range = start..start + source.len();
             start = range.end;
             let answers = &answers[range.clone()];
-            let oldest = answers
+            let first_due = answers
                 .iter()
                 .map(Option::as_ref)
                 .collect::<Option<Vec<_>>>()
-                .and_then(|given| {
-                    given
-                        .into_iter()
-                        .min_by_key(|answer| (answer.resolved_at, answer.ttl))
-                });
+                .and_then(|given| given.into_iter().min_by_key(|answer| expiry(answer)));
             let networks: Vec<IpNet> = answers
                 .iter()
                 .flatten()
@@ -547,8 +543,9 @@ fn sources(
                 place: source[0].place,
                 index: source[0].index,
                 label: source[0].label.clone(),
-                resolved_at: oldest.map(|answer| time(answer.resolved_at)),
-                ttl: oldest.map(|answer| u32::try_from(answer.ttl.as_secs()).unwrap_or(u32::MAX)),
+                resolved_at: first_due.map(|answer| time(answer.resolved_at)),
+                ttl: first_due
+                    .map(|answer| u32::try_from(answer.ttl.as_secs()).unwrap_or(u32::MAX)),
                 prefixes: FamilyCounts { ipv4, ipv6 },
                 error: errors[range].iter().flatten().next().cloned(),
             }
@@ -773,7 +770,7 @@ mod tests {
     }
 
     #[test]
-    fn each_source_counts_its_distinct_networks_from_its_oldest_answer_with_its_first_error() {
+    fn each_source_counts_its_distinct_networks_from_its_first_due_answer_with_its_first_error() {
         let spec = sliplib_yaml::from_str(
             "{nodes: [node-a], include: [
                 {label: a, asns: [AS64496, AS64497]},
@@ -809,7 +806,7 @@ mod tests {
                  "prefixes": {"ipv4": 2, "ipv6": 1}, "error": "AS64497 gave up"},
                 {"place": "include", "index": 1, "prefixes": {"ipv4": 1, "ipv6": 0},
                  "error": "b.example.com gave up"},
-                {"place": "include", "index": 2, "resolvedAt": "1970-01-01T00:01:10Z", "ttl": 600,
+                {"place": "include", "index": 2, "resolvedAt": "1970-01-01T00:01:30Z", "ttl": 120,
                  "prefixes": {"ipv4": 2, "ipv6": 0}},
                 {"place": "exclude", "index": 0, "resolvedAt": "1970-01-01T00:01:40Z",
                  "ttl": 86_400, "prefixes": {"ipv4": 1, "ipv6": 0}},

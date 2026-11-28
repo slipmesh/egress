@@ -144,11 +144,12 @@ pub struct SourceStatus {
     #[schemars(length(max = 63))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
-    /// The oldest of its queries' last good answers; absent until each has one.
+    /// When the answer that expires first came, which need not be the oldest; absent until each of
+    /// its queries has answered.
     #[schemars(with = "Time")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_at: Option<Time>,
-    /// Seconds that oldest answer holds, so it is asked again at `resolvedAt` plus this: the
+    /// Seconds that answer holds, so the source is next asked at `resolvedAt` plus this: the
     /// source's or the list's `ttl`, or for a host what its records gave within it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ttl: Option<u32>,

@@ -83,11 +83,10 @@ failed one. A list that stops naming the node loses that entry.
 The entry's `sources` has one item per source of `include` and `exclude`, keyed by `place` and
 `index`, with its `label`:
 
-- `resolvedAt` is the oldest of its queries' last good answers, absent until each query has
-  answered;
-- `ttl` is how long that answer holds, so it is asked again at `resolvedAt` plus `ttl`. That is the
-  source's or the list's `ttl`, or for a host what its records gave within it. Another host of the
-  same source can be due sooner;
+- `resolvedAt` is when the answer that expires first came, which need not be the oldest, absent
+  until each query has answered;
+- `ttl` is how long that answer holds, so the source is next asked at `resolvedAt` plus `ttl`. That
+  is the source's or the list's `ttl`, or for a host what its records gave within it;
 - `prefixes` counts the distinct networks of its answers per family, before composing;
 - `error` is the first failure of its queries. Each failure stays until its query answers, beside
   that query's last good networks.

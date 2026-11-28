@@ -257,12 +257,14 @@ spec:
                             - ipv6
                             type: object
                           resolvedAt:
-                            description: The oldest of its queries' last good answers; absent until each has one.
+                            description: |-
+                              When the answer that expires first came, which need not be the oldest; absent until each of
+                              its queries has answered.
                             format: date-time
                             type: string
                           ttl:
                             description: |-
-                              Seconds that oldest answer holds, so it is asked again at `resolvedAt` plus this: the
+                              Seconds that answer holds, so the source is next asked at `resolvedAt` plus this: the
                               source's or the list's `ttl`, or for a host what its records gave within it.
                             format: uint32
                             minimum: 0.0
