@@ -53,8 +53,8 @@ A list's queries run at once. Each RIPEstat request has 90 s and each family of 
 query that fails is asked again, up to six attempts, waiting 5 s and twice as long after each
 failure, at most 3 min. A RIPEstat error, an answer of the wrong shape or over 64 MiB, and either
 family of a host failing to look up are failures; a family without records is only empty. The
-resolve fails once one query has given up, and so do a host with no address and a list with
-nothing left.
+resolve fails when a query has given up, once every query has ended; every other query's answer
+is kept. A host with no address and a list with nothing left fail it too.
 
 The router daemon of the Talos extensions keeps its own IPv4-only copy of this resolver for format
 version 1 until that daemon stops resolving lists; a defect found in one copy is checked against
@@ -79,6 +79,19 @@ After every resolve the node applies its own entry of `status.nodes`, through se
 with the field manager `egress/<node>`: `observedGeneration`, `resolvedAt` of the last good
 resolve, the prefix count per family and the `Resolved` condition, its message the error of a
 failed one. A list that stops naming the node loses that entry.
+
+The entry's `sources` has one item per source of `include` and `exclude`, keyed by `place` and
+`index`, with its `label`:
+
+- `resolvedAt` is when the answer that expires first came, which need not be the oldest, absent
+  until each query has answered;
+- `ttl` is how long that answer holds, so the source is next asked at `resolvedAt` plus `ttl`. That
+  is the source's own `ttl` if it has one, else the list's; a host without one gets its records'
+  TTL, within the list's `ttl` and at least 60 s;
+- `prefixes` counts the distinct networks of its answers per family, host bits cleared, before
+  composing;
+- `error` is the first failure of its queries. Each failure stays until its query answers, beside
+  that query's last good networks.
 
 `--metrics <address:port>` is where `/metrics` is served; the DaemonSet gives the node's
 InternalIP, `status.hostIP`, and port 9478. The series are `slipmesh_egress_prefixes{egress,family}`,

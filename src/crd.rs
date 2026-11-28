@@ -116,10 +116,49 @@ pub struct NodeStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_at: Option<Time>,
     pub prefixes: FamilyCounts,
+    /// Each source of the spec, in its order.
+    #[schemars(length(max = 2 * MAX_SOURCES))]
+    #[serde(default)]
+    pub sources: Vec<SourceStatus>,
     #[schemars(extend("x-kubernetes-list-type" = "map", "x-kubernetes-list-map-keys" = ["type"]))]
     #[schemars(length(max = 8))]
     #[serde(default)]
     pub conditions: Vec<Condition>,
+}
+
+/// Whether a source is of `include` or of `exclude`.
+#[derive(schemars::JsonSchema, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum Place {
+    Include,
+    Exclude,
+}
+
+/// One source of the spec as this node last asked it.
+#[derive(KubeSchema, Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceStatus {
+    pub place: Place,
+    /// Its index in `include` or `exclude`.
+    pub index: u32,
+    #[schemars(length(max = 63))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// When the answer that expires first came, which need not be the oldest; absent until each of
+    /// its queries has answered.
+    #[schemars(with = "Time")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_at: Option<Time>,
+    /// Seconds that answer holds, so the source is next asked at `resolvedAt` plus this: the
+    /// source's own `ttl` if it has one, else the list's, or for a host its records' TTL within the
+    /// list's and at least 60 s.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl: Option<u32>,
+    /// The distinct networks its answers gave, host bits cleared, before composing.
+    pub prefixes: FamilyCounts,
+    /// The first failure of its queries, each kept until that query answers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[derive(KubeSchema, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -203,6 +242,14 @@ mod tests {
                 "observedGeneration": 1,
                 "resolvedAt": "2026-01-01T00:00:00Z",
                 "prefixes": {"ipv4": 2, "ipv6": 1},
+                "sources": [{
+                    "place": "include",
+                    "index": 0,
+                    "resolvedAt": "2026-01-01T00:00:00Z",
+                    "ttl": 86_400,
+                    "prefixes": {"ipv4": 2, "ipv6": 0},
+                    "error": "gave up",
+                }],
                 "conditions": [{
                     "type": "Resolved",
                     "status": "True",

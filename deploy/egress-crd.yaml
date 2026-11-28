@@ -216,6 +216,68 @@ spec:
                       description: When the list was last resolved.
                       format: date-time
                       type: string
+                    sources:
+                      default: []
+                      description: Each source of the spec, in its order.
+                      items:
+                        description: One source of the spec as this node last asked it.
+                        properties:
+                          error:
+                            description: The first failure of its queries, each kept until that query answers.
+                            nullable: true
+                            type: string
+                          index:
+                            description: Its index in `include` or `exclude`.
+                            format: uint32
+                            minimum: 0.0
+                            type: integer
+                          label:
+                            maxLength: 63
+                            nullable: true
+                            type: string
+                          place:
+                            description: Whether a source is of `include` or of `exclude`.
+                            enum:
+                            - include
+                            - exclude
+                            type: string
+                          prefixes:
+                            description: The distinct networks its answers gave, host bits cleared, before composing.
+                            properties:
+                              ipv4:
+                                format: uint32
+                                minimum: 0.0
+                                type: integer
+                              ipv6:
+                                format: uint32
+                                minimum: 0.0
+                                type: integer
+                            required:
+                            - ipv4
+                            - ipv6
+                            type: object
+                          resolvedAt:
+                            description: |-
+                              When the answer that expires first came, which need not be the oldest; absent until each of
+                              its queries has answered.
+                            format: date-time
+                            type: string
+                          ttl:
+                            description: |-
+                              Seconds that answer holds, so the source is next asked at `resolvedAt` plus this: the
+                              source's own `ttl` if it has one, else the list's, or for a host its records' TTL within the
+                              list's and at least 60 s.
+                            format: uint32
+                            minimum: 0.0
+                            nullable: true
+                            type: integer
+                        required:
+                        - index
+                        - place
+                        - prefixes
+                        type: object
+                      maxItems: 200
+                      type: array
                   required:
                   - node
                   - observedGeneration
