@@ -150,10 +150,11 @@ pub struct SourceStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_at: Option<Time>,
     /// Seconds that answer holds, so the source is next asked at `resolvedAt` plus this: the
-    /// source's or the list's `ttl`, or for a host what its records gave within it.
+    /// source's own `ttl` if it has one, else the list's, or for a host its records' TTL within the
+    /// list's and at least 60 s.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ttl: Option<u32>,
-    /// The distinct networks its answers gave, before composing.
+    /// The distinct networks its answers gave, host bits cleared, before composing.
     pub prefixes: FamilyCounts,
     /// The first failure of its queries, each kept until that query answers.
     #[serde(default, skip_serializing_if = "Option::is_none")]

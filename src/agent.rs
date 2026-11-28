@@ -534,7 +534,7 @@ fn sources(
             let networks: Vec<IpNet> = answers
                 .iter()
                 .flatten()
-                .flat_map(|answer| answer.networks.iter().copied())
+                .flat_map(|answer| answer.networks.iter().map(IpNet::trunc))
                 .collect::<BTreeSet<_>>()
                 .into_iter()
                 .collect();
@@ -782,7 +782,7 @@ mod tests {
         let asked = resolve::asked(&spec);
         let answers = [
             answered(100, &["192.0.2.0/24", "2001:db8::/32"]),
-            answered(50, &["192.0.2.0/24", "198.51.100.0/24"]),
+            answered(50, &["192.0.2.1/24", "198.51.100.0/24"]),
             held(100, 300, &["203.0.113.1/32"]),
             None,
             held(70, 600, &["203.0.113.3/32"]),
@@ -790,7 +790,7 @@ mod tests {
             answered(100, &["192.0.2.0/25"]),
         ];
         let errors = [
-            None,
+            Some("AS64496 gave up".to_owned()),
             Some("AS64497 gave up".to_owned()),
             None,
             Some("b.example.com gave up".to_owned()),
@@ -803,7 +803,7 @@ mod tests {
             json!([
                 {"place": "include", "index": 0, "label": "a",
                  "resolvedAt": "1970-01-01T00:00:50Z", "ttl": 86_400,
-                 "prefixes": {"ipv4": 2, "ipv6": 1}, "error": "AS64497 gave up"},
+                 "prefixes": {"ipv4": 2, "ipv6": 1}, "error": "AS64496 gave up"},
                 {"place": "include", "index": 1, "prefixes": {"ipv4": 1, "ipv6": 0},
                  "error": "b.example.com gave up"},
                 {"place": "include", "index": 2, "resolvedAt": "1970-01-01T00:01:30Z", "ttl": 120,

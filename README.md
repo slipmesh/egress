@@ -53,8 +53,8 @@ A list's queries run at once. Each RIPEstat request has 90 s and each family of 
 query that fails is asked again, up to six attempts, waiting 5 s and twice as long after each
 failure, at most 3 min. A RIPEstat error, an answer of the wrong shape or over 64 MiB, and either
 family of a host failing to look up are failures; a family without records is only empty. The
-resolve fails once one query has given up, though every other query's answer is kept, and so do a
-host with no address and a list with nothing left.
+resolve fails when a query has given up, once every query has ended; every other query's answer
+is kept. A host with no address and a list with nothing left fail it too.
 
 The router daemon of the Talos extensions keeps its own IPv4-only copy of this resolver for format
 version 1 until that daemon stops resolving lists; a defect found in one copy is checked against
@@ -86,8 +86,10 @@ The entry's `sources` has one item per source of `include` and `exclude`, keyed 
 - `resolvedAt` is when the answer that expires first came, which need not be the oldest, absent
   until each query has answered;
 - `ttl` is how long that answer holds, so the source is next asked at `resolvedAt` plus `ttl`. That
-  is the source's or the list's `ttl`, or for a host what its records gave within it;
-- `prefixes` counts the distinct networks of its answers per family, before composing;
+  is the source's own `ttl` if it has one, else the list's; a host without one gets its records'
+  TTL, within the list's `ttl` and at least 60 s;
+- `prefixes` counts the distinct networks of its answers per family, host bits cleared, before
+  composing;
 - `error` is the first failure of its queries. Each failure stays until its query answers, beside
   that query's last good networks.
 
