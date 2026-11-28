@@ -31,11 +31,11 @@ serde = { version = "1.0.229", features = ["derive"] }
 # The derive's code names it.
 serde_json = "1.0.154"
 # The annotations that give the route table and protocol, and the `Mesh` resource.
-sliplib-config = { git = "https://github.com/slipmesh/sliplib", tag = "v0.28.1", features = ["kube"] }
-sliplib-kube = { git = "https://github.com/slipmesh/sliplib", tag = "v0.28.1" }
-sliplib-net = { git = "https://github.com/slipmesh/sliplib", tag = "v0.28.1", features = ["netlink"] }
-sliplib-runtime = { git = "https://github.com/slipmesh/sliplib", tag = "v0.28.1", features = ["metrics"] }
-sliplib-yaml = { git = "https://github.com/slipmesh/sliplib", tag = "v0.28.1" }
+sliplib-config = { git = "https://github.com/slipmesh/sliplib", tag = "v0.28.2", features = ["kube"] }
+sliplib-kube = { git = "https://github.com/slipmesh/sliplib", tag = "v0.28.2" }
+sliplib-net = { git = "https://github.com/slipmesh/sliplib", tag = "v0.28.2", features = ["netlink"] }
+sliplib-runtime = { git = "https://github.com/slipmesh/sliplib", tag = "v0.28.2", features = ["metrics"] }
+sliplib-yaml = { git = "https://github.com/slipmesh/sliplib", tag = "v0.28.2" }
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 tracing = "0.1.44"
 
