@@ -65,7 +65,7 @@ spec:
       priorityClassName: system-node-critical
       containers:
         - name: egress
-          image: ghcr.io/slipmesh/egress:v0.1.0
+          image: ghcr.io/slipmesh/egress:v0.2.0
           # Root, which an added capability needs, with the node's routes and nothing more.
           securityContext:
             capabilities:
