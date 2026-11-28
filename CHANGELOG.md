@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] - 2026-11-28
+
+### Added ✨
+
+- Report each source's last answer in the status (#17)
+
+### Build system 🛠️
+
+- Update sliplib to v0.28.2 (#16)
+
 ## [0.1.0] - 2026-11-27
 
 ### Breaking changes 💥
